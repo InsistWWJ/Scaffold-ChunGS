@@ -1,0 +1,87 @@
+%YAML:1.0
+---
+# ============================================================================
+# Scaffold-ChunGS Configuration
+# Anchor-based Gaussian Splatting with Chunk Memory Management
+# ============================================================================
+
+# --------------------------------------------------------------------------
+# Anchor Parameters (Scaffold-GS representation)
+# --------------------------------------------------------------------------
+Anchor.n_offsets: 5
+Anchor.feat_dim: 32
+Anchor.voxel_size: 0.01
+Anchor.sh_degree: 1
+
+# MLP architecture flags
+Anchor.use_feat_bank: 0
+Anchor.add_opacity_dist: 1
+Anchor.add_cov_dist: 1
+Anchor.add_color_dist: 1
+Anchor.appearance_dim: 0
+
+# Densification
+Anchor.update_depth: 3
+Anchor.update_init_factor: 100
+Anchor.update_hierarchy_factor: 4
+Anchor.densify_grad_threshold: 0.0002
+Anchor.densify_opacity_threshold: 0.005
+Anchor.densify_check_interval: 100
+
+# Pruning
+Anchor.prune_opacity_threshold: 0.005
+Anchor.prune_check_interval: 100
+Anchor.prune_success_threshold: 80
+
+# --------------------------------------------------------------------------
+# Chunk Memory Management
+# --------------------------------------------------------------------------
+Chunk.chunk_size: 20.0
+Chunk.max_anchors_in_memory: 300000
+Chunk.new_anchor_chunk_density: 10
+Chunk.storage_base_path: "./chunks"
+
+# --------------------------------------------------------------------------
+# Optimization
+# --------------------------------------------------------------------------
+Optimization.anchor_position_lr_init: 0.00005
+Optimization.anchor_position_lr_decay: 0.99998
+Optimization.anchor_feature_lr: 0.005
+Optimization.anchor_opacity_lr: 0.1
+Optimization.anchor_scaling_lr: 0.01
+Optimization.anchor_rotation_lr: 0.002
+Optimization.offset_lr: 0.0001
+
+Optimization.mlp_opacity_lr: 0.005
+Optimization.mlp_cov_lr: 0.005
+Optimization.mlp_color_lr: 0.0025
+
+Optimization.lambda_dssim: 0.2
+Optimization.lambda_depth: 0.1
+Optimization.lambda_isotropic: 0.01
+
+Optimization.max_num_iterations: -1
+Optimization.new_keyframe_times_of_use: 8
+Optimization.stable_num_iter_existence: 1
+Optimization.smooth_l1: 0
+Optimization.spatial_lr_scale: 1.0
+
+# --------------------------------------------------------------------------
+# Camera
+# --------------------------------------------------------------------------
+Camera.z_near: 0.01
+Camera.z_far: 100.0
+
+# --------------------------------------------------------------------------
+# Keyframe
+# --------------------------------------------------------------------------
+Keyframe.large_rotation_threshold: 1.0
+Keyframe.large_translation_threshold: 0.1
+Keyframe.min_num_initial_map_kfs: 10
+Keyframe.gaus_pyramid_sub_levels: 1
+
+# --------------------------------------------------------------------------
+# Device
+# --------------------------------------------------------------------------
+Device.data_device: "cuda"
+Device.white_background: 0
