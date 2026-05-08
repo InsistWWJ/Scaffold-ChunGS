@@ -1,0 +1,7 @@
+# latexmk configuration for Scaffold-ChunGS thesis
+# Uses xelatex (required for Chinese ctex) + biber (GB/T 7714-2015)
+$pdf_mode = 1;
+$xelatex = "xelatex -synctex=1 -interaction=nonstopmode %O %S";
+$bibtex = "biber %O %B";
+$clean_ext = "bbl bcf blg run.xml auxlock thm loa lot lof toc out";
+$max_repeat = 4;

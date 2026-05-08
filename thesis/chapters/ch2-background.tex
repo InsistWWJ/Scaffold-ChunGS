@@ -1,0 +1,183 @@
+% ===========================================================================
+% 第二章 相关技术基础
+% ===========================================================================
+\chapter{相关技术基础}
+
+本章阐述\ScaffoldChunGS 所依赖的核心技术基础，依次介绍3D高斯泼溅的原理、Scaffold-GS锚点压缩表示、DiskChunGS分块外存管理，以及视觉SLAM的相关基础概念。
+
+\section{3D高斯泼溅（3D Gaussian Splatting）}
+
+3DGS\cite{kerbl20233dgaussians}的核心思想是以一组显式的3D高斯椭球体$\{\mathcal{G}_i\}_{i=1}^{N}$作为场景表示，通过可微光栅化实现从任意视点的高效渲染。
+
+\subsection{高斯椭球体参数化}
+
+每个高斯椭球体$\mathcal{G}_i$由以下参数定义：
+
+\begin{equation}
+\mathcal{G}_i(\mathbf{x}) = \exp\left(-\frac{1}{2}(\mathbf{x}-\boldsymbol{\mu}_i)^\top \boldsymbol{\Sigma}_i^{-1}(\mathbf{x}-\boldsymbol{\mu}_i)\right)
+\end{equation}
+
+其中$\boldsymbol{\mu}_i\in\mathbb{R}^3$为高斯中心位置，$\boldsymbol{\Sigma}_i\in\mathbb{R}^{3\times 3}$为协方差矩阵。为保证半正定性，协方差矩阵分解为：
+
+\begin{equation}
+\boldsymbol{\Sigma}_i = \mathbf{R}_i\,\mathbf{S}_i\mathbf{S}_i^\top\,\mathbf{R}_i^\top
+\end{equation}
+
+其中$\mathbf{R}_i$为旋转矩阵（由四元数$\mathbf{q}_i\in\mathbb{R}^4$参数化），$\mathbf{S}_i=\operatorname{diag}(s_{i,1},s_{i,2},s_{i,3})$为各向异性尺度矩阵。
+
+每个高斯还携带不透明度$\alpha_i\in[0,1]$以及视角相关的颜色信息。颜色由球谐函数（Spherical Harmonics, SH）系数表示，通常取SH阶数0--3（共16个系数/颜色通道，合计48维）。
+
+综上，一个标准3D高斯的总参数量为：
+\begin{equation}
+\underbrace{3}_{\boldsymbol{\mu}} + \underbrace{3}_{\mathbf{s}} + \underbrace{4}_{\mathbf{q}} + \underbrace{1}_{\alpha} + \underbrace{48}_{\text{SH}} = 59\ \text{个浮点参数} \approx 240\ \text{bytes（FP32）}
+\end{equation}
+
+\subsection{可微光栅化}
+
+给定相机位姿$\mathbf{T}_{cw}$和内参矩阵$\mathbf{K}$，3DGS的渲染流程如下：
+
+\textbf{步骤1 -- 投影。}将3D高斯投影至图像平面，得到2D高斯：
+\begin{equation}
+\boldsymbol{\mu}_{2D} = \pi(\mathbf{K}\mathbf{T}_{cw}\,\boldsymbol{\mu}),\quad
+\boldsymbol{\Sigma}_{2D} = \mathbf{J}\mathbf{W}\boldsymbol{\Sigma}\mathbf{W}^\top\mathbf{J}^\top
+\end{equation}
+其中$\mathbf{J}$为投影变换的雅可比矩阵，$\mathbf{W}$为$\mathbf{T}_{cw}$的旋转分量。
+
+\textbf{步骤2 -- 排序。}按深度对投影后的2D高斯排序。
+
+\textbf{步骤3 -- $\alpha$混合。}从前至后累积颜色：
+\begin{equation}
+C(\mathbf{p}) = \sum_{i=1}^{N_\text{vis}} c_i\,\alpha_i'(\mathbf{p})\prod_{j=1}^{i-1}\left(1-\alpha_j'(\mathbf{p})\right)
+\end{equation}
+其中$c_i$为高斯$i$的视角相关颜色，$\alpha_i'(\mathbf{p})$为像素$\mathbf{p}$处的有效不透明度（由2D高斯值与不透明度$\alpha_i$计算得到）。
+
+\textbf{步骤4 -- 反向传播。}所有高斯参数均可微，损失梯度可经$\alpha$混合反向传播，使用Adam优化器更新参数。
+
+\subsection{自适应稠密化}
+
+3DGS在训练过程中动态调整高斯数量：对梯度较大的高斯进行分裂或克隆（稠密化），对不透明度极低的高斯进行剔除（剪枝）。该机制使场景从稀疏初始点云开始，逐步生长至几何细节丰富的最终表示。
+
+\section{Scaffold-GS 锚点压缩表示}
+
+Scaffold-GS\cite{lu2024scaffoldgs}的核心创新在于以\textbf{锚点+MLP}的分层结构替代独立高斯参数化，实现大幅度存储压缩。
+
+\subsection{体素化锚点}
+
+给定初始稠密点云$\mathcal{P}=\{(\mathbf{p}_j,\mathbf{c}_j)\}$，以体素尺寸$v_s$进行均匀体素化：
+\begin{equation}
+\mathcal{V} = \operatorname{Voxelize}(\mathcal{P},\,v_s)
+\end{equation}
+
+每个非空体素被标记为一个\textbf{锚点}（anchor）。锚点$A_i$的参数包括：
+\begin{itemize}
+    \item 体素中心位置$\mathbf{x}_i^a\in\mathbb{R}^3$（可学习）
+    \item 可学习特征向量$\mathbf{f}_i^a\in\mathbb{R}^{D}$（典型值$D=32$）
+    \item $K=5$个子偏移量$\{\mathbf{o}_i^k\in\mathbb{R}^3\}_{k=1}^{K}$（可学习）
+    \item 基础缩放参数$\mathbf{s}_i^a\in\mathbb{R}^6$（前3维控制offset，后3维控制子高斯尺度）
+    \item 基础旋转四元数$\mathbf{q}_i^a\in\mathbb{R}^4$
+    \item 基础不透明度$\alpha_i^a\in\mathbb{R}$（inverse-sigmoid空间）
+\end{itemize}
+
+\subsection{视角条件MLP解码器}
+
+渲染时，对每个可见锚点，三个独立MLP将其特征$\mathbf{f}_i^a$与视角信息拼接后解码为$K$个子高斯参数：
+
+\begin{equation}
+\begin{aligned}
+\{\alpha_i^k\} &\leftarrow \operatorname{MLP}_\text{opacity}\big([\mathbf{f}_i^a\,|\,\mathbf{d}_{\text{view}}\,|\,d_{\text{dist}}]\big),\quad k=1,\dots,K \\
+\{(\Delta\mathbf{s}_i^k,\mathbf{q}_i^k)\} &\leftarrow \operatorname{MLP}_\text{cov}\big([\mathbf{f}_i^a\,|\,\mathbf{d}_{\text{view}}\,|\,d_{\text{dist}}]\big),\quad k=1,\dots,K \\
+\{\mathbf{c}_i^k\} &\leftarrow \operatorname{MLP}_\text{color}\big([\mathbf{f}_i^a\,|\,\mathbf{d}_{\text{view}}\,|\,d_{\text{dist}}]\big),\quad k=1,\dots,K
+\end{aligned}
+\end{equation}
+
+其中$\mathbf{d}_{\text{view}}$为锚点至相机的视线方向，$d_{\text{dist}}$为距离。子高斯的最终参数为：
+
+\begin{equation}
+\begin{aligned}
+\mathbf{x}_i^k &= \mathbf{x}_i^a + \mathbf{o}_i^k \cdot \mathbf{s}_i^a[:3] \\
+\alpha_i^k &= \operatorname{Sigmoid}(\alpha_i^k) \\
+\mathbf{s}_i^k &= \mathbf{s}_i^a[3:6] + \Delta\mathbf{s}_i^k \\
+\mathbf{q}_i^k &= \frac{\mathbf{q}_i^k}{\|\mathbf{q}_i^k\|}\quad\text{（归一化）}
+\end{aligned}
+\end{equation}
+
+MLPs引入视角依赖使子高斯能自适应不同观察方向——这对训练视角稀疏的SLAM场景至关重要。
+
+\subsection{存储压缩比分析}
+
+对于一个包含$N_A$个锚点、每锚点$K$个子高斯的场景：
+
+\begin{itemize}
+    \item \textbf{标准3DGS存储：}$N_A \times K \times 59 \times 4$ bytes
+    \item \textbf{锚点表示存储：}$N_A \times (3+4+6+1+3K+D) \times 4$ bytes + MLP权重
+\end{itemize}
+
+以$D=32$、$K=5$为例，锚点参数约276 bytes/锚点。均摊至每个子高斯约为$276/5 \approx 55$ bytes，加上MLP权重均摊后约$28$ bytes/高斯。\textbf{压缩比约$240/28 \approx 8.6\times$。}
+
+\subsection{层级化锚点生长}
+
+Scaffold-GS的稠密化在锚点层面进行：对梯度响应高的锚点，以其子偏移位置为种子进行层级化体素细分（$\text{update\_depth}=3$层，每层体素缩小$\text{update\_hierarchy\_factor}=4$倍），在新体素中心放置新锚点，实现由粗到细的场景覆盖。
+
+\section{DiskChunGS 分块外存管理}
+
+DiskChunGS\cite{feldmann2026diskchungs}在3DGS SLAM中引入分块外存管理机制，突破GPU显存对场景规模的限制。
+
+\subsection{空间分块策略}
+
+将世界坐标系划分为边长为$S$的立方块（chunk）。每个3D点$\mathbf{x}=(x,y,z)$被映射到一个唯一的块坐标$\mathbf{C}=(c_x,c_y,c_z)$：
+
+\begin{equation}
+c_i = \left\lfloor\frac{x_i}{S}\right\rfloor,\quad i\in\{x,y,z\}
+\end{equation}
+
+每个Chunk被编码为一个64-bit整数ID，使用21-bit有符号表示每轴（含20-bit偏移量允许负坐标）。
+
+\subsection{LRU淘汰机制}
+
+系统维护一个固定容量上限$M_{\max}$（以锚点数为单位）。当当前GPU锚点数超过$M_{\max}$时触发淘汰：
+
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item 记录每个块的最近访问时间戳（std::chrono::steady\_clock）。
+    \item 选出最近最少使用的非可见块。
+    \item 将选中的块序列化写入磁盘（\schun 二进制文件）。
+    \item 从GPU暂存器中释放该块的锚点数据。
+    \item 保留5\%滞后缓冲区（hysteresis），避免频繁抖动。
+\end{enumerate}
+
+\subsection{二进制块格式}
+
+DiskChunGS设计了自包含的块序列化格式。每个块文件包含：
+\begin{itemize}
+    \item 魔数标识（4 bytes）与版本号
+    \item 块ID（64-bit编码）
+    \item 块内锚点数量
+    \item 所有锚点张量（位置、特征、偏移、缩放、旋转、不透明度）
+    \item 追踪张量（梯度累积、不透明度累积、创建轮次等）
+    \item Adam优化器状态（步数、一阶动量、二阶动量）for each parameter group
+\end{itemize}
+
+\section{视觉SLAM基础}
+
+\subsection{关键帧与位姿优化}
+
+视觉SLAM系统通过选择关键帧（Keyframe）来稀疏化观测序列，并在关键帧间进行位姿优化。常用策略包括基于旋转/平移阈值的固定间隔采样和基于损失加权的自适应采样\cite{mur2017orb}。
+
+\subsection{RGB-D相机模型}
+
+给定RGB-D相机内参$(f_x,f_y,c_x,c_y)$，像素$\mathbf{p}=(u,v)$对应的3D点为：
+\begin{equation}
+\mathbf{x}_c = \begin{pmatrix}
+\frac{u-c_x}{f_x} \cdot d, &
+\frac{v-c_y}{f_y} \cdot d, &
+d
+\end{pmatrix}^\top
+\end{equation}
+其中$d$为该像素的深度值。
+
+\subsection{3DGS在SLAM中的角色}
+
+在GS-SLAM框架中，3DGS同时承担三种角色：\textbf{地图表示}（存储场景几何与外观）、\textbf{渲染引擎}（从估计位姿生成视图用于匹配）和\textbf{优化目标}（光度误差驱动高斯参数更新）。这种统一表示简化了传统SLAM中地图维护、回环检测和全局BA的分离架构。
+
+\section{本章小结}
+
+本章介绍了3DGS的基本原理、Scaffold-GS的锚点压缩策略、DiskChunGS的分块外存管理以及视觉SLAM基础。这些技术构成了\ScaffoldChunGS 的理论基础。第三章将详细阐述如何将锚点压缩与分块管理深度融合到一个统一的系统框架中。

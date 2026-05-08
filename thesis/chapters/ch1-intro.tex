@@ -1,0 +1,80 @@
+% ===========================================================================
+% 第一章 绪论
+% ===========================================================================
+\chapter{绪论}
+
+\section{研究背景与意义}
+
+三维场景重建是计算机视觉与机器人领域的核心问题之一，其目标是从传感器数据中恢复环境的几何结构与外观信息。该技术在增强现实（AR/VR）、自动驾驶、机器人导航、数字孪生以及文化遗产数字化保护等领域具有广泛的应用前景。
+
+传统三维重建方法主要包括基于体素（Volumetric）的TSDF（Truncated Signed Distance Function）融合\cite{curless1996volumetric}和基于点云的结构从运动（Structure from Motion, SfM）\cite{snavely2006photo}。TSDF方法受限于固定分辨率网格，无法同时捕捉大范围场景与精细细节；点云方法虽灵活但缺乏完整的外观信息，难以生成逼真的可视化效果。
+
+2020年，神经辐射场（Neural Radiance Fields, NeRF）\cite{mildenhall2020nerf}的提出标志着三维重建进入神经网络时代。NeRF通过MLP隐式表达场景的密度与颜色场，配合体渲染实现照片级新视角合成。然而，NeRF的体渲染需沿每条射线密集采样，导致训练与推理速度极慢（单场景训练需数小时），难以满足实时SLAM需求。
+
+2023年，3D高斯泼溅（3D Gaussian Splatting, 3DGS）\cite{kerbl20233dgaussians}横空出世，以显式的3D高斯椭球体取代隐式MLP表示，通过可微光栅化实现快速渲染与梯度反向传播。3DGS将训练时间从数小时缩短至数十分钟，渲染帧率达实时级别（$\ge$30 FPS），迅速成为三维视觉领域的研究热点\cite{chen2024surgey}。
+
+然而，标准3DGS在面对大规模场景时面临严峻的\textbf{内存瓶颈}：
+
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item \textbf{单高斯存储开销大。}每个高斯椭球体需存储位置$\mathbf{x}\in\mathbb{R}^3$、颜色（球谐系数，最高48维）、不透明度$\alpha\in\mathbb{R}$、协方差矩阵（尺度$\mathbf{s}\in\mathbb{R}^3$ + 旋转四元数$\mathbf{q}\in\mathbb{R}^4$），合计约59个浮点参数（$\sim$240 bytes/高斯）。对于中等规模的室内场景，高斯数量即可达到数百万量级，单场景显存占用轻易突破8 GB。
+    \item \textbf{场景规模受限。}所有高斯参数及其Adam优化器状态需常驻GPU显存，场景范围严格受限于显存容量。在室外大规模建图中，这一约束尤为严重。
+\end{enumerate}
+
+针对上述问题，学术界在两条技术路线上取得了重要进展：
+
+\begin{itemize}
+    \item \textbf{锚点压缩表示（Scaffold-GS）\cite{lu2024scaffoldgs}}：以稀疏的体素化锚点替代独立高斯，通过轻量MLP在渲染时解码子高斯参数，将单高斯存储开销压缩5--10倍。Compact\_GSSLAM\cite{chen2025compact}进一步将锚点表示引入SLAM系统，在嵌入式平台上实现了可控内存的稠密SLAM。
+    \item \textbf{分块外存管理（DiskChunGS）\cite{feldmann2026diskchungs}}：将场景按空间划分为固定块（chunk），设计LRU淘汰策略将非活跃块换出至磁盘，仅在GPU显存中保留可见区域，理论上支持无限大场景。
+\end{itemize}
+
+然而，这两项技术尚未被整合到一个统一的系统中。本文将二者深度融合，设计并实现\ScaffoldChunGS——一个兼具存储压缩与场景扩展能力的3D高斯SLAM系统。
+
+\section{国内外研究现状}
+
+\subsection{3D高斯泼溅与SLAM}
+
+3DGS自提出以来迅速催生了大量后续工作。在SLAM领域，SplaTAM\cite{keetha2024splatam}首次将3DGS引入稠密RGB-D SLAM，以高斯椭球体作为地图表示，通过可微渲染联合优化相机位姿与场景参数。GS-SLAM\cite{yan2024gsslam}、Photo-SLAM\cite{huang2024photoslam}等工作进一步在跟踪精度与渲染质量上取得突破。然而，这些早期GS-SLAM系统均采用标准3DGS表示，继承了其内存开销大的缺陷。
+
+\subsection{锚点压缩场景表示}
+
+Scaffold-GS\cite{lu2024scaffoldgs}（CVPR 2024）提出以场景体素化锚点（anchor）替代独立高斯：每个非空体素放置一个锚点，存储中心位置$\mathbf{x}_a$、可学习特征向量$\mathbf{f}_a\in\mathbb{R}^{D}$、$K$个子偏移量$\{\mathbf{o}_k\}_{k=1}^K$及基础缩放/旋转参数。渲染时通过三个独立MLP将锚点特征解码为$K$个子高斯的完整参数。这种"锚点→子高斯"的分层结构使总存储量与场景锚点数（而非高斯数）成正比，显著降低内存占用。
+
+Compact\_GSSLAM\cite{chen2025compact}（IJCV 2025）将Scaffold-GS引入SLAM系统，提出了层级锚点生长与剪枝机制（$\text{update\_depth}=3$层），在嵌入式Jetson平台上实现了高效的稠密视觉SLAM。
+
+\subsection{分块外存管理}
+
+DiskChunGS\cite{feldmann2026diskchungs}（IEEE RA-L 2026）首次在3DGS SLAM中引入块式外存管理。其核心思想是：（1）将空间划分为固定大小的立方块（chunk）；（2）仅维护可见块在GPU显存中；（3）通过LRU策略淘汰非活跃块至磁盘；（4）设计二进制块文件格式完整保存高斯参数与优化器状态。该方案将场景规模从显存上限扩展至磁盘容量上限。
+
+\subsection{现有工作的不足}
+
+尽管上述两项技术分别在"压缩"和"扩展"维度取得了突破，但它们在以下方面存在不足：
+
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item Scaffold-GS与Compact\_GSSLAM\textbf{未解决大场景扩展问题}——尽管压缩了单场景内存，但所有锚点仍常驻GPU显存，场景总容量依然有限。
+    \item DiskChunGS\textbf{未采用压缩表示}——块文件存储的是全量高斯参数，I/O带宽和磁盘占用未能受益于压缩。
+    \item \textbf{二者缺乏统一框架}——将锚点压缩与块管理结合需要全新的工程架构设计：块的划分粒度须从"高斯级"提升至"锚点级"，LRU淘汰、MLP展开、层级生长等模块均需协同设计。
+\end{enumerate}
+
+本文的工作正是在这一空白处展开。
+
+\section{主要研究内容}
+
+本文的主要研究内容包括以下三个方面：
+
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item \textbf{锚点压缩场景表示的设计与实现。}构建体素化锚点初始化、视角条件MLP解码器、层级化锚点生长与剪枝的完整管线，实现约8.6倍的存储压缩比。
+    \item \textbf{锚点粒度的分块外存管理。}设计锚点级空间分块策略与64-bit Chunk ID编码方案，实现LRU淘汰、异步并行块I/O、内存压力自动监控，定义自包含的\schun 二进制块格式。
+    \item \textbf{统一C++/LibTorch系统框架的构建。}在C++17/CUDA环境下集成两级视锥剔除、多目标损失优化、关键帧采样等模块，并通过合成场景验证系统功能完整性。
+\end{enumerate}
+
+\section{论文章节安排}
+
+本文共分为五章，组织结构如下：
+
+\begin{itemize}
+    \item \textbf{第一章 绪论。}介绍研究背景、国内外研究现状、主要研究内容及论文结构。
+    \item \textbf{第二章 相关技术基础。}阐述3DGS、Scaffold-GS锚点表示、DiskChunGS分块管理及视觉SLAM的基础理论。
+    \item \textbf{第三章 系统设计与实现。}详细描述\ScaffoldChunGS 的总体架构及四大模块（锚点表示、块管理、渲染、训练）的设计与实现。
+    \item \textbf{第四章 实验与分析。}在合成场景上验证系统功能，分析压缩率、内存管理与消融实验结果。
+    \item \textbf{第五章 总结与展望。}总结全文工作，指出当前局限并展望未来改进方向。
+\end{itemize}

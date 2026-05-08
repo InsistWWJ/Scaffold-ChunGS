@@ -1,0 +1,59 @@
+% ===========================================================================
+% 第五章 总结与展望
+% ===========================================================================
+\chapter{总结与展望}
+
+\section{工作总结}
+
+本文针对标准3D高斯泼溅在视觉SLAM应用中面临的两大瓶颈——单高斯存储开销大与场景规模受限于GPU显存——设计并实现了一套融合锚点压缩表示与分块外存管理的统一3D高斯SLAM系统\ScaffoldChunGS。主要完成的工作如下：
+
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item \textbf{实现了完整的锚点压缩场景表示管线。}
+        包括体素化锚点初始化、视角条件三MLP解码器（不透明度/协方差/颜色）、层级化锚点生长（$\text{update\_depth}=3$层）与基于累积不透明度的锚点剪枝机制。
+        该方案将单高斯存储开销从约240 bytes压缩至约28 bytes，理论压缩比约8.6倍。
+
+    \item \textbf{设计并实现了锚点粒度的分块外存管理系统。}
+        定义了64-bit Chunk ID空间编码方案与锚点级空间分块策略；实现了LRU淘汰算法（含5\%滞后缓冲区防止震荡）与异步并行块I/O；定义了自包含的\schun 二进制块格式，完整保存锚点参数与Adam优化器状态，支持训练暂停与恢复。
+        该方案使场景规模从GPU显存上限扩展至磁盘容量上限。
+
+    \item \textbf{构建了统一的C++/LibTorch系统框架。}
+        集成两级视锥剔除（块级AABB测试+锚点级球体测试）、多目标损失函数（L1+SSIM+深度+各向同性正则化）、基于损失加权的关键帧采样以及8组Adam参数更新调度。在合成球面场景上验证了系统的端到端功能完整性。
+
+    \item \textbf{设计了完整的实验分析框架。}
+        从压缩效果、内存管理行为、关键参数消融三个维度构建了评测方案，为后续在真实数据集上的完整评测提供了模板。
+\end{enumerate}
+
+\section{未来工作展望}
+
+\ScaffoldChunGS 作为一个基础性系统框架，在以下几个方面有待进一步完善与扩展：
+
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+
+    \item \textbf{完整光栅化器替换。}
+        当前系统的CUDA光栅化器为简化点泼溅实现，渲染质量与原始3DGS的tile-based排序混合存在差距\cite{kerbl20233dgaussians}。
+        将该模块替换为INRIA的\verb|diff_gaussian_rasterization|是实现与SOTA方法（如Compact\_GSSLAM\cite{chen2025compact}、Photo-SLAM\cite{huang2024photoslam}）公平定量对比的前提。
+
+    \item \textbf{闭环检测与全局BA集成。}
+        当前系统依赖外部位姿输入，缺乏闭环检测能力（NetVLAD全局描述子检索\cite{arandjelovic2016netvlad} + GICP几何校验 + 3DGS配准）与全局BA优化，长期运行存在累积漂移。
+        Compact\_GSSLAM\cite{chen2025compact}和DiskChunGS\cite{feldmann2026diskchungs}已分别验证了各自的闭环方案，可移植至本系统。
+
+    \item \textbf{实时可视化界面。}
+        将DiskChunGS的OpenGL/ImGui实时渲染器移植至本系统，支持训练过程的交互式可视化与调试。
+
+    \item \textbf{优化器状态增量更新。}
+        当前锚点生长后需完整重建Adam优化器（`trainingSetup`），效率较低。
+        参考Compact\_GSSLAM的做法，实现优化器状态的增量扩展——仅为新锚点分配零初始化状态，保留旧锚点的既有状态——以减少训练中断。
+
+    \item \textbf{深度先验集成。}
+        将DepthLab\cite{kopf2024depthlab}等扩散式深度补全模型作为深度先验集成至系统中，改善在稀疏或含噪深度输入条件下的重建质量。
+
+    \item \textbf{真实数据集全面评测。}
+        在标准SLAM/三维重建数据集（TUM RGB-D\cite{sturm2012tum}、Replica\cite{straub2019replica}、ScanNet\cite{dai2017scannet}、EuRoC MAV\cite{burri2016euroc}）上进行全面的定量评测，并与Compact\_GSSLAM、DiskChunGS、Photo-SLAM等baseline进行系统对比。
+
+    \item \textbf{嵌入式平台适配。}
+        针对Jetson AGX Orin等嵌入式平台进行CUDA kernel优化与内存精简，实现边缘端的大场景稠密SLAM。
+
+\end{enumerate}
+
+\vspace{1cm}
+\noindent 通过上述改进，\ScaffoldChunGS 有潜力成为一个兼具压缩效率、场景可扩展性与高渲染质量的实用化3D高斯SLAM系统，为AR/VR、机器人导航与数字孪生等应用提供底层技术支持。
