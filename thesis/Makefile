@@ -1,11 +1,12 @@
 # Scaffold-ChunGS Thesis Makefile
+# 中国地质大学（武汉）学士学位论文
 #
 # Prerequisites:
-#   - TeX Live (with xelatex, biber, ctex, biblatex-gb7714-2015)
-#   - latexmk
+#   - TeX Live 2023+ (xelatex, biber, ctex, biblatex-gb7714-2005)
+#   - latexmk (optional, for watch mode)
 #
 # Usage:
-#   make          - Build the thesis (PDF)
+#   make          - Build thesis PDF (full: xelatex -> biber -> xelatex -> xelatex)
 #   make clean    - Remove auxiliary files
 #   make watch    - Continuous build (requires latexmk -pvc)
 
@@ -17,11 +18,13 @@ PDF  = $(MAIN).pdf
 all: $(PDF)
 
 $(PDF): $(MAIN).tex chapters/*.tex thesis.bib
-	latexmk -xelatex -bibtex -interaction=nonstopmode $(MAIN).tex
+	xelatex -synctex=1 -interaction=nonstopmode $(MAIN).tex
+	biber $(MAIN)
+	xelatex -synctex=1 -interaction=nonstopmode $(MAIN).tex
+	xelatex -synctex=1 -interaction=nonstopmode $(MAIN).tex
 
 clean:
-	latexmk -C $(MAIN).tex
 	rm -f *.aux *.log *.out *.toc *.lof *.lot *.bbl *.blg *.bcf *.run.xml *.synctex.gz
 
 watch:
-	latexmk -pvc -xelatex -bibtex $(MAIN).tex
+	latexmk -pvc -xelatex -bibtex=biber $(MAIN).tex

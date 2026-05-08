@@ -1,47 +1,72 @@
 % ===========================================================================
-% Scaffold-ChunGS 本科毕业论文
-% 学校模板匹配：请根据 Word 模板的格式要求调整下方参数
-% 编译：xelatex -> biber -> xelatex -> xelatex
+% 中国地质大学（武汉）学士学位论文
+% Scaffold-ChunGS: 基于锚点压缩与分块外存管理的大场景3D高斯SLAM系统
+%
+% 编译方式: latexmk -xelatex main.tex
+% 或: make
 % ===========================================================================
-\documentclass[zihao=-4,a4paper,oneside,openany]{ctexbook}
+\documentclass[zihao=-4,twoside,openright]{ctexbook}
 
 % ---------------------------------------------------------------------------
-% 页面布局（请根据 Word 模板的页边距要求修改）
+% 页面布局 —— 按学校 Word 模板调整
 % ---------------------------------------------------------------------------
-\usepackage[top=2.54cm, bottom=2.54cm, left=3.17cm, right=3.17cm]{geometry}
+\usepackage[top=2.54cm, bottom=2.54cm, left=3.17cm, right=3.17cm, headheight=14pt]{geometry}
 
 % ---------------------------------------------------------------------------
-% 字体与中文支持
+% 字体设置
 % ---------------------------------------------------------------------------
 \usepackage{fontspec}
 \setmainfont{Times New Roman}
-\setCJKmainfont{SimSun}[AutoFakeBold=2.5]
+% 正文宋体, 标题黑体由 ctexbook 自动处理
+% 若需精确控制可以参考学校要求调整 \CJKfamily
 
 % ---------------------------------------------------------------------------
 % 常用宏包
 % ---------------------------------------------------------------------------
-\usepackage{amsmath,amssymb}          % 数学公式
-\usepackage{algorithm}                % 伪代码
+\usepackage{amsmath,amssymb}
+\usepackage{algorithm}
 \usepackage{algpseudocode}
-\usepackage{graphicx}                 % 图片
-\usepackage{subcaption}               % 子图
-\usepackage{booktabs}                 % 三线表
-\usepackage{longtable}                % 长表格
-\usepackage{array}                    % 表格列格式
-\usepackage{multirow}                 % 合并行
-\usepackage{listings}                 % 代码块
-\usepackage{xcolor}                   % 颜色
-\usepackage{hyperref}                 % 超链接
-\usepackage{enumitem}                 % 列表格式
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{xspace}
 
 % ---------------------------------------------------------------------------
-% 参考文献 (GB/T 7714-2015 中国标准)
+% 参考文献 (GB/T 7714-2005 顺序编码制)
 % ---------------------------------------------------------------------------
-\usepackage[backend=biber,style=gb7714-2015,sorting=nyt]{biblatex}
+\usepackage[backend=biber,style=gb7714-2005,sorting=none]{biblatex}
 \addbibresource{thesis.bib}
 
 % ---------------------------------------------------------------------------
-% 代码高亮样式
+% 页眉页脚 —— 双面印制
+%   奇数页左: 中国地质大学    偶数页右: 姓名：论文题目
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+% 请将"姓名"和"论文题目"替换为实际信息
+\fancyhead[LE]{\songti\zihao{-5}中国地质大学}
+\fancyhead[RO]{\songti\zihao{-5}XXX：基于锚点压缩与分块外存管理的大场景3D高斯SLAM系统设计与实现}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% 每章首页页眉样式
+\fancypagestyle{plain}{
+  \fancyhf{}
+  \fancyfoot[C]{\thepage}
+  \renewcommand{\headrulewidth}{0pt}
+}
+
+% ---------------------------------------------------------------------------
+% 代码高亮
 % ---------------------------------------------------------------------------
 \definecolor{codebg}{RGB}{245,245,245}
 \definecolor{codeframe}{RGB}{200,200,200}
@@ -60,13 +85,14 @@
 }
 
 % ---------------------------------------------------------------------------
-% 超链接样式
+% 超链接
 % ---------------------------------------------------------------------------
 \hypersetup{
     colorlinks=true,
     linkcolor=black,
     citecolor=black,
     urlcolor=blue,
+    pdfstartview=FitH,
 }
 
 % ---------------------------------------------------------------------------
@@ -75,42 +101,74 @@
 \newcommand{\ScaffoldChunGS}{\textsc{Scaffold-ChunGS}\xspace}
 \newcommand{\schun}{\texttt{.schun}\xspace}
 
+% ===========================================================================
 \begin{document}
 
-% ===========================================================================
-% 封面（按学校 Word 模板填写）
-% ===========================================================================
+% ───────────────────────────────────────────────────────────────────────────
+% 中文封面（附件1）
+% ───────────────────────────────────────────────────────────────────────────
 \begin{titlepage}
 \centering
 
-\vspace*{4cm}
+\vspace*{3cm}
 
-{\huge\bfseries 基于锚点压缩与分块外存管理的\\[6pt] 大场景3D高斯SLAM系统设计与实现}
+{\heiti\zihao{1} 学士学位论文}
 
-\vspace{2cm}
+\vspace{2.5cm}
 
-{\Large \textbf{Scaffold-ChunGS: Compressed 3D Gaussian SLAM\\[4pt] with Chunk-Based Out-of-Core Memory Management}}
+{\heiti\zihao{2} \textbf{\\论文题目}}
 
-\vspace{3cm}
+\vspace{3.5cm}
 
-\begin{tabular}{rl}
-\textbf{学\quad 院：} & \underline{\hspace{3cm}} \\[8pt]
-\textbf{专\quad 业：} & \underline{\hspace{3cm}} \\[8pt]
-\textbf{姓\quad 名：} & \underline{\hspace{3cm}} \\[8pt]
-\textbf{学\quad 号：} & \underline{\hspace{3cm}} \\[8pt]
-\textbf{指导教师：} & \underline{\hspace{3cm}} \\[8pt]
+{\songti\zihao{3}
+\begin{tabular}{r@{：}l}
+学\qquad 号 & \makebox[5cm]{\hrulefill} \\
+姓\qquad 名 & \makebox[5cm]{\hrulefill} \\
+学 科 专 业 & \makebox[5cm]{\hrulefill} \\
+指 导 教 师 & \makebox[5cm]{\hrulefill} \quad 职称 \\
+              & \makebox[5cm]{\hrulefill} \quad 职称 \\
+培 养 单 位 & \makebox[5cm]{\hrulefill} \\
 \end{tabular}
+}
 
 \vspace{2cm}
-{\large \today}
+
+{\songti\zihao{3} 二○\quad 年\quad 月}
 
 \end{titlepage}
 
-% ===========================================================================
+% ───────────────────────────────────────────────────────────────────────────
+% 原创性声明（附件2）
+% ───────────────────────────────────────────────────────────────────────────
+\newpage
+\thispagestyle{empty}
+\vspace*{1cm}
+
+\begin{center}
+{\heiti\zihao{3} 中国地质大学（武汉）学士学位论文原创性声明}
+\end{center}
+
+\vspace{1.5cm}
+
+{\songti\zihao{4}
+本人郑重声明：本人所呈交的学士学位论文《\textbf{基于锚点压缩与分块外存管理的大场景3D高斯SLAM系统设计与实现}》，是本人在指导老师的指导下，在中国地质大学（武汉）攻读学士学位期间独立进行研究工作所取得的成果。论文中除已注明部分外不包含他人已发表或撰写过的研究成果，对论文的完成提供过帮助的有关人员已在文中说明并致以谢意。
+
+\vspace{1cm}
+
+本人所呈交的学士学位论文没有违反学术道德和学术规范，没有侵权行为，并愿意承担由此而产生的法律责任和法律后果。
+
+\vspace{2cm}
+
+\begin{flushright}
+学位论文作者签名：\underline{\hspace{3cm}} \\[2cm]
+日\qquad 期：\qquad 年\qquad 月\qquad 日
+\end{flushright}
+}
+
+% ───────────────────────────────────────────────────────────────────────────
 % 中文摘要
-% ===========================================================================
+% ───────────────────────────────────────────────────────────────────────────
 \chapter*{摘\quad 要}
-\addcontentsline{toc}{chapter}{摘要}
 
 3D高斯泼溅（3D Gaussian Splatting, 3DGS）近年来在三维场景重建与实时渲染领域取得了突破性进展，并逐步被引入视觉SLAM系统中。然而，标准3DGS面临两大瓶颈：（1）每个高斯椭球体需存储59个独立参数，导致稠密重建时GPU显存占用巨大；（2）场景规模受限于显存容量，无法处理大范围环境。
 
@@ -124,20 +182,19 @@
 
 实验在合成球面场景上验证了系统的功能完整性，并分析了锚点压缩率、块I/O性能及各模块的消融效果。结果表明，\ScaffoldChunGS 在理论上可将单GPU显存可支撑的场景规模从约30M高斯扩展至无上限（受限于磁盘容量），同时保持与标准3DGS可比的渲染质量。
 
-\vspace{1cm}
-\noindent\textbf{关键词：} 3D高斯泼溅；视觉SLAM；场景压缩；外存管理；锚点表示
+\vspace{1em}
+\noindent\textbf{关键词：}3D高斯泼溅；视觉SLAM；场景压缩；外存管理；锚点表示
 
-% ===========================================================================
-% 英文摘要
-% ===========================================================================
+% ───────────────────────────────────────────────────────────────────────────
+% 英文摘要 (Abstract)
+% ───────────────────────────────────────────────────────────────────────────
 \chapter*{Abstract}
-\addcontentsline{toc}{chapter}{Abstract}
 
 3D Gaussian Splatting (3DGS) has achieved breakthroughs in 3D scene reconstruction and real-time rendering, and has been increasingly integrated into visual SLAM systems. However, standard 3DGS faces two major bottlenecks: (1) each Gaussian ellipsoid requires 59 independent parameters, leading to prohibitive GPU memory consumption in dense reconstruction; (2) the scene scale is limited by GPU memory capacity, preventing handling of large-scale environments.
 
 To address these issues, this thesis designs and implements \ScaffoldChunGS—a unified 3D Gaussian SLAM system that combines anchor-based compressed scene representation with chunk-based out-of-core memory management. The main contributions include:
 
-\textbf{(1) Anchor-based compressed scene representation.} Adopting Scaffold-GS's voxelized anchor representation, sparse anchors (voxel centers + feature vectors) replace dense Gaussians. Three view-conditioned MLPs (opacity, covariance, color) dynamically decode child Gaussian parameters at render time. This scheme compresses per-Gaussian storage from approximately 240 bytes to approximately 28 bytes (for 5 child Gaussians per anchor), achieving a compression ratio of approximately 8.6×.
+\textbf{(1) Anchor-based compressed scene representation.} Adopting Scaffold-GS's voxelized anchor representation, sparse anchors (voxel centers + feature vectors) replace dense Gaussians. Three view-conditioned MLPs (opacity, covariance, color) dynamically decode child Gaussian parameters at render time. This scheme compresses per-Gaussian storage from approximately 240 bytes to approximately 28 bytes (for 5 child Gaussians per anchor), achieving a compression ratio of approximately 8.6$\times$.
 
 \textbf{(2) Chunk-based out-of-core memory management.} The scene is spatially partitioned into fixed-size chunks. An LRU eviction policy swaps inactive chunks to disk, retaining only the visible region in GPU memory. A self-contained \schun binary chunk format stores all anchor parameters and Adam optimizer states, supporting training suspension and resumption.
 
@@ -145,14 +202,21 @@ To address these issues, this thesis designs and implements \ScaffoldChunGS—a 
 
 Experiments on a synthetic sphere scene validate the system's functional completeness and analyze anchor compression ratio, chunk I/O performance, and ablation effects of each module. Results show that \ScaffoldChunGS can theoretically extend per-GPU-memory scene capacity from approximately 30M Gaussians to unlimited (bounded only by disk capacity), while maintaining rendering quality comparable to standard 3DGS.
 
-\vspace{1cm}
+\vspace{1em}
 \noindent\textbf{Keywords:} 3D Gaussian Splatting; Visual SLAM; Scene Compression; Out-of-Core Memory; Anchor-Based Representation
 
-% ===========================================================================
+% ───────────────────────────────────────────────────────────────────────────
 % 目录
-% ===========================================================================
+% ───────────────────────────────────────────────────────────────────────────
 \tableofcontents
+
+% 图清单（可选，若有图则建议保留）
+\clearpage
+\renewcommand{\listfigurename}{图清单}
 \listoffigures
+
+% 表清单（可选）
+\renewcommand{\listtablename}{表清单}
 \listoftables
 
 % ===========================================================================
@@ -165,7 +229,7 @@ Experiments on a synthetic sphere scene validate the system's functional complet
 \input{chapters/ch5-summary.tex}
 
 % ===========================================================================
-% 参考文献
+% 参考文献 (GB/T 7714-2005 顺序编码制)
 % ===========================================================================
 \printbibliography[heading=bibintoc,title={参考文献}]
 
@@ -175,13 +239,20 @@ Experiments on a synthetic sphere scene validate the system's functional complet
 \chapter*{致\quad 谢}
 \addcontentsline{toc}{chapter}{致谢}
 
-（在此处填写致谢内容）
+% （在此处填写致谢内容）
+
+\vspace{3cm}
+
+\begin{flushright}
+学位论文作者签名：\underline{\hspace{3cm}} \\[1cm]
+日\qquad 期：\qquad 年\qquad 月\qquad 日
+\end{flushright}
 
 % ===========================================================================
-% 附录（可选）
+% 附录（可选，根据实际需要决定是否添加）
 % ===========================================================================
 % \appendix
-% \chapter{配置参数表}
-% \chapter{关键代码片段}
+% \chapter{系统配置参数表}
+% \chapter{核心代码片段}
 
 \end{document}

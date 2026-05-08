@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git -C \"e:/Project/SLAM/Scaffold-ChunGS\" log --oneline -20)"
+      "Bash(git -C \"e:/Project/SLAM/Scaffold-ChunGS\" log --oneline -20)",
+      "Bash(python3 -c ' *)",
+      "Bash(python -c ' *)"
     ]
   }
 }

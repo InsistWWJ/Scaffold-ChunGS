@@ -1,0 +1,149 @@
+
+附件 1 ：中文封面页
+学士学位论文
+论文题目
+学       号： XXX
+姓       名： XXX
+学 科 专 业： XXX
+指 导 教 师： XXX    职称
+XXX    职称
+培 养 单 位：
+二○× ×年×月
+附件 2 ：原创性声明
+中国地质大学（武汉）学士学位论文原创性声明
+本人郑重声明：本人所呈交的学士学位论文《×××××××》，是本 人在指导老师的指导下，在中国地质大学（武汉）攻读学士学位期间 独立进行研究工作所取得的成果。论文中除已注明部分外不包含他人 已发表或撰写过的研究成果，对论文的完成提供过帮助的有关人员已 在文中说明并致以谢意。
+本人所呈交的学士学位论文没有违反学术道德和学术规范，没有 侵权行为，并愿意承担由此而产生的法律责任和法律后果。
+学位论文作者签名：           
+日  期：      年    月    日
+附件 3 ： 目录
+目  录
+图清单和表清单是非必要项，可根据论文实际情况确定是否需要。
+61978558212图清单 
+表清单  Ⅱ
+第一章 绪论 1
+第二章  X 3
+2. 1 X  3
+2. 1. 1 X  3
+2. 1.2 X  3
+2.2 X4
+2.2. 1 X  4
+第八章 结论  81
+致谢82
+参考文献83
+附录85
+附件 4 ：图和表清单
+图清单
+图 2-1 X  4
+图 2-2  X  6
+图 3-1 X  10
+表清单
+表 2-1 X  4
+表 2-2 X  6
+表 3-1 X  10
+附件 5 ：页眉式样
+（双面印制）
+2        姓名：题目
+奇数页式样                            偶数页式样
+中国地质大学□   1
+附件 6 ：参考文献
+[1]   中华人民共和国国家质量监督检验检疫总局 ， 中国国家标准化管理委员会.GB/T 7713. 1-2006 学位论文编写规则[S].
+[2]   中华人民共和国国家质量监督检验检疫总局 ， 中国国家标准化管理委员会.GB/T 7714-2005《文后参考文献著录规则》[S].
+[2]   中华人 民共和国教 育部.   中华人 民共和国学位条例实施办法 [EB/OL](1981-05-20) [2004-10-09].http://www.moe.edu.cn/edoas/website18/00/info6400.htm.
+[3]  国务院学位委员会，教育部.  授予博士、硕士学位和培养研究生的学科、专业目录[EB/OL] (1997)[2005-06-25].http://www.moe.edu.cn/edoas/website18/level2.jsp?tablename=1288.
+[4]  国家技术监督局.GB/T 16159－1996 汉语拼音正词法基本规则.
+[5]   中华人民共和国国家质量监督检验检疫总局.GB/T 7156-2003 文献保密等级代码与标识
+[S].
+[6]  中国科学技术情报所.汉语主题词表.科学技术文献出版社.1991-1.
+[7]  国家技术监督局.GB/T 15834—1995《标点符号用法》[S] ，1995-12-13.
+[8]  国家技术监督局.GB/T 15835—1995《出版物上数字用法的规定》[S].1995-12-13.
+[9]  中华人民共和国新闻出版总署.CY/T 35-2001《科技书刊的章节编号方法》[S]，2001-8-30.
+顺序编码制文后参考文献表著录格式示例  (详见《文后参考文献著录规则(GB/T 7714－2005)》)
+1 ．普通图书
+[1]广西壮族自治区林业厅．广西自然保护[M] ．北京：中国林业出版社，1993 .
+[2]蒋有绪，郭泉水，马娟，等．中国森林群落分类及其群落学特征[M] ．北京：科学出版社， 1998 .
+[3]唐绪军．报业经济与报业经营[M] ．北京：新华出版社，1999：117-121 .
+[4]赵凯华，罗蔚茵．新概念物理教程：力学[M] ．北京：高等教育出版社，1995 .
+[5]汪昂．（增补）本草备要[M] ．石印本．上海：同文书局，1912 .
+[6]CRA  WFPRD  W  ， GORMAN  M  ．  Future  l  ：  barrier  ： dreams  ，  madness  ，   reality[M] ．Chicago：American Library Association ， 1995 .
+[7]International Federation of Library Association and Institutions ． Names of persons: national  usages for entry in catalogues[M] ．3rd ed ． London:：IFLA In International Office for UBC， 1977 .
+[8]O’BRIEN J A ． Introduction to information systems [M] ． 7th ed．Burr Ridge，III．： Irwin， 1994 .
+[9]ROOD H J ．Logic and structured design for computer programmers[M] ．3rd ed ． [S ．l ．]： Brooks/Cole Thomson Learning, ，2001 .
+2 ．论文集、会议录
+[1]中国力学学会．第 3 届全国实验流体力学学术会议论文集[C]．天津：[出版者不祥]，1990 .
+[2]ROSENTHALL E M ．Proceedings of the Fifth Canadian Mathematical Congress ， University of Montreal ， 1961[C] ． Toronto： University of Toronto Press ，1963 .
+[3]GANZHA V G ， MAYR E W ， VOROZHTSOV  EV ． Computer  algebra in scientific computing ： CASC 2000 ： proceedings of the Third Workshop  on Computer Algebra in Scientific Computing, ，Samarkand ， October 5-9 ，2000[C]. ．Berlin： Springer ， c2000 .
+3 ．科技报告
+[1]U ． S ． Department of Transportation Federal    Highway Administration ． Guidelines for handling   excavated   acid-producing   materials   ， PB    91-19400[R]   ． Springfield   ：
+U ．S ．Department of Commerce National Information Service ，1990 .
+[2]World  Health  Organization ． Factors  regulating  the  immune  response ：  report  of WHO Scientific Group[R] ． Geneva：WHO ，1970 .
+4 ．学位论文
+[1]张志祥．间断动力系统的随机扰动及其在守恒律方程中的应用[D] ．北京：北京大学数学
+学院，1998 .
+[2]CALMS R B. Infrared  spectroscopic  studies on  solid oxygen[D] ． Berkeley ： Univ ． of California ，1965 .
+5 ．专利文献
+[1]刘加林．多功能一次性压舌板：中国，92214985 ．2[P] ．1993-04-14 .
+[2]河北绿洲生态环境科技有限公司 ．一种荒漠化地区生态植被综合培植方法： 中国， 01129210 ． 5[P/OL] ．2001-10-24[2002-05-28] ．http ：//211 ． 152 ．9 ．47/sipoasp/zlijs/ hyjs-yx-new ，asp? recid=01129210 ．5 leixin .
+[3]KOSEKI A，MOMOSE H，KAWAHITO M，et．al．Compiler：US，828402[P/OL]．2002-05-25 [2002-05-28]．http://FF p= 1 u=netahtml/PTO/search-bool．htm1 r=5 f=G 1=50 col=A ND d=PG01 sl=IBM ．AS ． 0S=AN/IBM RS=AN/IBM .
+6 ．专著中析出的文献
+[1]国家标准局信息分类编码研究所．GB/T2659-1986 世界各国和地区名称代码[S]//全国文献 工作标准化技术委员会．文献工作国家标准汇编：3 ．北京： 中国标准出版社，1988： 59-92 .
+[2]韩吉人．论职工教育的特点[G]//中国职工教育研究会．职工教育研究论文集．北京：人 民教育出版社，1985：90-99 .
+[3]BUSECK P R ，NORD G L ，Jr. ，VEBLEN D R ． Sub solidus phenomena in pyroxenes[M]  //PREWITT C T．Pyroxenes. Washington D．C．：Mineralogical Society of America，cl1980： 117-211.
+[4]FOURNEY M  E ． Advances  in  holographic  photo  elasticity[C]//     American  Society  of Mechanical Engineers ． Applied Mechanics Division ．  Symposium  on Applications of Holography in Mechanics ， August 23-25 ，1971 ， University of Southern California ， Los Angeles ， California ， New York： ASME ， c1971：17-38 .
+[5]MARTIN G ． Control  of electronic resources in Australia  [M]//PATTLE   L W ， COX  B
+J．Electronic resources：selection and bibliographic control．New York：The Haworth Press， 1996：85-96 .
+7 ．期刊中析出的文献
+[1]李炳穆．理想的图书馆员和信息专家的素质与形象[J] ．图书情报工作，2000（2）：5-8 .
+[2]陶仁骥．密码学与数学[J] ． 自然杂志，1984 ，7（7）：527 .
+[3]亚洲地质图编目组．亚洲地层与地质历史概述[J] ．地质学报，1978 ，3 ：194-208 .
+[4]DES MARAIS D J ， STRAUSS H ， SUMMONS R E ， et al ． Carbon isotope evidence for the stepwise oxidation of the Proterozoic environment[J] ． Nature ， 1992 ，359：605-609 .
+[5]HEWITT J A ．Technical services in 1983[J] ．Library Resource Services ， 1984 ，28(3)： 205-218 .
+8 ．报纸中析出的文献
+[1]丁文祥．数字革命与竞争国际化[N] ．中国青年报，2000-11-20（15）.
+[2]张田勤．罪犯 DNA 库与生命伦理学计划[N] ．大众科技报，2000-11-12（7）.
+9 ．电子文献（包括专著或连续出版物中析出的电子文献）
+[1]江向东．互联网环境下的信息处理与图书管理系统解决方案[J／OL] ．情报学报，1999， 18(2):4[2000-01-18] ．http://www.chinainfo.gov.cn/periodical/qbxb/qbxb99/qbxb 990203 .
+[2] 萧 钰 ． 出 版 业 信 息 化 迈 入 快 车 道 [EB/OL] ．（ 2001-12-19 ） [2002-04-15]http ： //www ．Creader ．com.news/20011219/200112190019 ．Html .
+[3]CHRISTINE M．Plant physiology：plant    biology in the Genome Era[J/OL]．Science ， 1998， 281：331-332[1988-09-23] ．http：//www ．Sciencemag ．org/cgi/collection/ anatmorp .
+[4]METCALF  S  W.The  Tort  Hall  air  emission  study[C/OL]//The  International  Congress  on Hazardous Waste ，Atlanta Marriott Marquis Hotel ， Atlanta ， Georgia ，June 5-8 ，1995： impact on human and ecological health [1998-09-22] ．http ：//atsdrl ．Atsdr ．cdc ．Gov ： 8080/cong95 ．Html .
+[5]TURCOTTE D  L ． Fractals  and  chaos  in  geology  and  geophysisce  [M/OL] ． New  York: Cambridge University Press ，1992[1998-09-23] ．http：//www ．Seg ．org/reviews/ mccorm
+30 ．Html .
+10 ．文献类型和电子文献载体标志代码(见下表)
+表：文献类型、标志代码和电子文献载体、标志代码
+文献类型和标志代码
+电子文献载体和标志代码
+文献类型
+标志代码
+载体类型
+标志代码
+普通图书
+M
+磁带（magnetic tape）
+MT
+会议录
+C
+磁盘（disk）
+DK
+汇编
+G
+光盘（CD-ROM）
+CD
+报纸
+N
+联机网络（online）
+OL
+期刊
+J
+学位论文
+D
+报告
+R
+标准
+S
+专利
+P
+数据库
+DB
+计算机程序
+CP
+电子公告
+EB
