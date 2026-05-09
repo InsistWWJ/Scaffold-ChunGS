@@ -16,6 +16,8 @@ thesis/*.thm
 thesis/*.fls
 thesis/*.fdb_latexmk
 thesis/main.pdf
+thesis/abstract-only.pdf
+thesis/aigc-check.pdf
 thesis/*.xdv
 
 # ===========================================================================

@@ -1,0 +1,200 @@
+% ===========================================================================
+% AIGC检测专用 — 仅含摘要、正文
+% 已移除: 封面、原创性声明、目录、图清单、表清单、致谢、附录、参考文献、页眉个人信息
+% ===========================================================================
+\documentclass[zihao=-4,twoside,openright,fontset=none]{ctexbook}
+
+\usepackage[paper=a4paper,
+            top=3cm, bottom=3cm,
+            left=3cm, right=3cm,
+            headheight=14pt,
+            headsep=0.5cm,
+            footskip=1cm,
+            includehead]{geometry}
+
+\setmainfont{Times New Roman}
+\setCJKmainfont{SimSun}[AutoFakeBold=2.5]
+\setCJKsansfont{SimHei}
+\setCJKmonofont{SimSun}
+
+\newCJKfontfamily\songti{SimSun}[AutoFakeBold=2.5]
+\newCJKfontfamily\heiti{SimHei}
+\newCJKfontfamily\kaishu{KaiTi}
+\newCJKfontfamily\fangsong{FangSong}
+
+\renewcommand{\normalsize}{\zihao{-4}}
+\setlength{\baselineskip}{20pt}
+\setlength{\parskip}{0pt}
+
+\usepackage{amsmath,amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{xspace}
+
+% (biblatex 已移除，引用标记静默丢弃)
+\newcommand{\cite}[2][]{}
+
+\ctexset{
+    chapter = {
+        name = {第,章},
+        number = \chinese{chapter},
+        format = \heiti\zihao{3}\bfseries\centering,
+        nameformat = {},
+        numberformat = {},
+        titleformat = {},
+        beforeskip = 40pt,
+        afterskip = 40pt,
+        fixskip = true,
+    },
+    section = {
+        format = \heiti\zihao{4}\bfseries\centering,
+        beforeskip = 20pt,
+        afterskip = 20pt,
+        fixskip = true,
+    },
+    subsection = {
+        format = \heiti\zihao{-4}\bfseries\raggedright,
+        beforeskip = 20pt,
+        afterskip = 20pt,
+        fixskip = true,
+    },
+    subsubsection = {
+        format = \heiti\zihao{-4}\bfseries\raggedright,
+        beforeskip = 12pt,
+        afterskip = 12pt,
+        fixskip = true,
+    },
+}
+
+% ---------------------------------------------------------------------------
+% 页眉页脚 — 仅页码, 无个人信息
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[RO]{\zihao{5}\songti \thepage}
+\fancyfoot[LE]{\zihao{5}\songti \thepage}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\fancypagestyle{plain}{
+  \fancyhf{}
+  \fancyfoot[RO]{\zihao{5}\songti \thepage}
+  \fancyfoot[LE]{\zihao{5}\songti \thepage}
+  \renewcommand{\headrulewidth}{0pt}
+}
+
+\ctexset{autoindent=2}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codeframe}{RGB}{200,200,200}
+\lstset{
+    backgroundcolor=\color{codebg},
+    basicstyle=\small\ttfamily,
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{codeframe},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    tabsize=2,
+    language=C++,
+    showstringspaces=false,
+    captionpos=b,
+}
+
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+\numberwithin{equation}{chapter}
+
+\usepackage{caption}
+\DeclareCaptionFont{captionfont}{\songti\zihao{5}}
+\captionsetup[figure]{
+    font=captionfont,
+    labelsep=quad,
+    justification=centering,
+    position=bottom,
+}
+\captionsetup[table]{
+    font=captionfont,
+    labelsep=quad,
+    justification=centering,
+    position=top,
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue,
+    pdfstartview=FitH,
+}
+
+\newcommand{\ScaffoldChunGS}{\textsc{Scaffold-ChunGS}\xspace}
+\newcommand{\schun}{\texttt{.schun}\xspace}
+
+% ===========================================================================
+\begin{document}
+
+% ═══════════════════════════════════════════════════════════════════════════════
+% 中文摘要
+% ═══════════════════════════════════════════════════════════════════════════════
+\chapter*{\heiti\zihao{-2}\bfseries 摘\quad 要}
+
+3D高斯泼溅（3D Gaussian Splatting, 3DGS）近年来在三维场景重建与实时渲染领域取得了突破性进展，并逐步被引入视觉SLAM系统中。然而，标准3DGS面临两大瓶颈：（1）每个高斯椭球体需存储59个独立参数，导致稠密重建时GPU显存占用巨大；（2）场景规模受限于显存容量，无法处理大范围环境。
+
+针对上述问题，本文设计并实现了一个融合锚点压缩场景表示与分块外存管理的统一3D高斯SLAM系统——\ScaffoldChunGS。系统的主要工作包括：
+
+\textbf{（1）锚点压缩场景表示。}采用Scaffold-GS的体素化锚点表示，以稀疏锚点（体素中心 + 特征向量）替代密集高斯，通过三个视角条件MLP（不透明度、协方差、颜色）在渲染时动态解码子高斯参数。该方案将单高斯存储开销从约240字节压缩至约28字节（以每锚点5个子高斯计），压缩比约8.6倍。
+
+\textbf{（2）分块外存管理。}将场景按空间划分为固定大小的块（Chunk），设计LRU淘汰策略将非活跃块换出至磁盘，仅保留可见区域在GPU显存中。定义了自包含的\schun 二进制块格式，完整保存锚点参数与Adam优化器状态，支持训练的暂停与恢复。
+
+\textbf{（3）统一C++/LibTorch系统框架。}在C++17/CUDA环境下构建完整的SLAM系统，包含两级视锥剔除、多目标损失函数（L1+SSIM+深度+各向同性正则化）、层级化锚点生长与剪枝、以及基于损失加权的关键帧采样等模块。
+
+实验在合成球面场景上验证了系统的功能完整性，并分析了锚点压缩率、块I/O性能及各模块的消融效果。结果表明，\ScaffoldChunGS 在理论上可将单GPU显存可支撑的场景规模从约30M高斯扩展至无上限（受限于磁盘容量），同时保持与标准3DGS可比的渲染质量。
+
+\vspace{1em}
+\noindent\textbf{关键词：}3D高斯泼溅；视觉SLAM；场景压缩；外存管理；锚点表示
+
+% ═══════════════════════════════════════════════════════════════════════════════
+% 英文摘要
+% ═══════════════════════════════════════════════════════════════════════════════
+\chapter*{\zihao{-2}\bfseries Abstract}
+
+3D Gaussian Splatting (3DGS) has achieved breakthroughs in 3D scene reconstruction and real-time rendering, and has been increasingly integrated into visual SLAM systems. However, standard 3DGS faces two major bottlenecks: (1) each Gaussian ellipsoid requires 59 independent parameters, leading to prohibitive GPU memory consumption in dense reconstruction; (2) the scene scale is limited by GPU memory capacity, preventing handling of large-scale environments.
+
+To address these issues, this thesis designs and implements \ScaffoldChunGS—a unified 3D Gaussian SLAM system that combines anchor-based compressed scene representation with chunk-based out-of-core memory management. The main contributions include:
+
+\textbf{(1) Anchor-based compressed scene representation.} Adopting Scaffold-GS's voxelized anchor representation, sparse anchors (voxel centers + feature vectors) replace dense Gaussians. Three view-conditioned MLPs (opacity, covariance, color) dynamically decode child Gaussian parameters at render time. This scheme compresses per-Gaussian storage from approximately 240 bytes to approximately 28 bytes (for 5 child Gaussians per anchor), achieving a compression ratio of approximately 8.6$\times$.
+
+\textbf{(2) Chunk-based out-of-core memory management.} The scene is spatially partitioned into fixed-size chunks. An LRU eviction policy swaps inactive chunks to disk, retaining only the visible region in GPU memory. A self-contained \schun binary chunk format stores all anchor parameters and Adam optimizer states, supporting training suspension and resumption.
+
+\textbf{(3) Unified C++/LibTorch system framework.} A complete SLAM system is built in a C++17/CUDA environment, featuring two-level frustum culling, multi-objective loss functions (L1+SSIM+depth+isotropic regularization), hierarchical anchor growing and pruning, and loss-weighted keyframe sampling.
+
+Experiments on a synthetic sphere scene validate the system's functional completeness and analyze anchor compression ratio, chunk I/O performance, and ablation effects of each module. Results show that \ScaffoldChunGS can theoretically extend per-GPU-memory scene capacity from approximately 30M Gaussians to unlimited (bounded only by disk capacity), while maintaining rendering quality comparable to standard 3DGS.
+
+\vspace{1em}
+\noindent\textbf{Keywords:} 3D Gaussian Splatting; Visual SLAM; Scene Compression; Out-of-Core Memory; Anchor-Based Representation
+
+% ===========================================================================
+% 正文
+% ===========================================================================
+\clearpage
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+\input{chapters/ch1-intro.tex}
+\input{chapters/ch2-background.tex}
+\input{chapters/ch3-design.tex}
+\input{chapters/ch4-experiments.tex}
+\input{chapters/ch5-summary.tex}
+
+\end{document}
