@@ -178,6 +178,70 @@ d
 
 在GS-SLAM框架中，3DGS同时承担三种角色：\textbf{地图表示}（存储场景几何与外观）、\textbf{渲染引擎}（从估计位姿生成视图用于匹配）和\textbf{优化目标}（光度误差驱动高斯参数更新）。这种统一表示简化了传统SLAM中地图维护、回环检测和全局BA的分离架构。
 
+
+\section{理论推理：锚点压缩与分块管理的耦合可行性}
+
+本文系统的核心假设是：\textbf{锚点压缩降低单位地图元素成本，分块外存管理限制同一时刻驻留GPU的地图范围，二者在锚点粒度上耦合后可同时缓解标准3DGS的参数冗余和显存容量瓶颈。}为说明该假设，本节从存储复杂度、显存上界、I/O摊销和优化一致性四个方面进行推理。
+
+\subsection{存储复杂度推理}
+
+设场景被表示为$N_A$个锚点，每个锚点在渲染时展开$K$个子高斯，则与其表达能力近似对应的标准3DGS需要$N_G=K N_A$个独立高斯。若忽略优化器状态，标准3DGS的参数存储为：
+\begin{equation}
+M_{\text{3DGS}} = 4 \cdot 59 \cdot K N_A.
+\end{equation}
+锚点表示的参数存储可写为：
+\begin{equation}
+M_{\text{anchor}} = 4 \cdot (3+4+6+1+3K+D)N_A + M_{\text{MLP}},
+\end{equation}
+其中$D$为锚点特征维度，$M_{\text{MLP}}$为三个共享解码器的权重。由于$M_{\text{MLP}}$与场景规模近似无关，当$N_A$较大时其均摊成本趋近于0。因此压缩比可近似表示为：
+\begin{equation}
+R = \frac{M_{\text{3DGS}}}{M_{\text{anchor}}}
+\approx \frac{59K}{14+3K+D}.
+\end{equation}
+在$K=5,D=32$时，锚点显式参数压缩比约为$\frac{295}{61}\approx4.84$；若进一步考虑标准3DGS中球谐颜色、优化器状态和中间梯度缓存对每个高斯逐项复制，而锚点方法将部分外观表达转移到共享MLP，则均摊单子高斯存储可进一步降低。由此可得：锚点表示的根本优势不在于简单删除颜色或几何项，而在于将大量局部重复的视角相关外观信息从“逐高斯参数”转化为“锚点特征+共享函数”。
+
+\subsection{GPU显存上界推理}
+
+标准在线3DGS-SLAM通常要求全部高斯参数及优化器状态常驻GPU，显存复杂度为$O(N_G)$。当轨迹长度增加时，$N_G$近似随观测空间体积或关键帧数增长，最终受到GPU容量$M_{\text{GPU}}$限制。引入块集合$\mathcal{C}$后，设每个块$c$包含$n_c$个锚点，当前视锥及其邻域需要加载的活跃块集合为$\mathcal{C}_{\text{act}}$，则锚点级分块系统的驻留显存可近似表示为：
+\begin{equation}
+M_{\text{resident}} = \sum_{c\in\mathcal{C}_{\text{act}}} B_A n_c + M_{\text{MLP}} + M_{\text{render}},
+\end{equation}
+其中$B_A$为单锚点参数、追踪量及优化器状态的字节数，$M_{\text{render}}$为当前帧展开子高斯和光栅化所需的临时缓存。只要相机视野有限且LRU策略保证$\sum_{c\in\mathcal{C}_{\text{act}}}n_c\leq N_{\max}$，则有：
+\begin{equation}
+M_{\text{resident}} \leq B_A N_{\max} + M_{\text{MLP}} + M_{\text{render}},
+\end{equation}
+该上界与磁盘中累计场景总规模$\sum_{c\in\mathcal{C}}n_c$解耦。换言之，系统能处理的总场景规模主要受磁盘容量和I/O吞吐限制，而不再直接受单GPU显存容量限制。这一结论与DiskChunGS\cite{feldmann2026diskchungs}的大规模分块思想一致，但本文将块内对象由独立高斯替换为锚点，因此进一步降低了块文件体积和换入换出带宽。
+
+\subsection{I/O摊销与块大小推理}
+
+分块外存管理并非块越小越好，也并非块越大越好。设块边长为$S$，相机每帧平均跨越距离为$\Delta l$，可见范围体积为$V_{\text{vis}}$，单位体积锚点密度为$\rho_A$。若$S$过小，则每帧可能触发较多块边界切换，元数据查找、文件打开和调度开销增加；若$S$过大，则单次换入会包含大量不可见锚点，导致显存浪费。可用如下近似关系描述块大小的折中：
+\begin{equation}
+N_{\text{load}}(S) \approx \rho_A \cdot \left|\operatorname{Dilate}(V_{\text{vis}}, S)\right|,
+\end{equation}
+其中$\operatorname{Dilate}(\cdot,S)$表示为避免频繁抖动而扩张到块边界后的加载体积。较小$S$降低单块冗余但提高调度频率，较大$S$降低调度频率但提高$N_{\text{load}}$。因此，合理的工程策略是将$S$设为略大于局部关键帧视域尺度，并配合LRU滞后缓冲，使相邻帧共享大部分活跃块，从而将磁盘I/O摊销到连续帧序列中。
+
+\subsection{可微优化一致性推理}
+
+锚点级分块还必须满足训练连续性。令第$t$帧对活跃锚点参数$\theta_c$产生损失$\mathcal{L}_t$，Adam优化器状态为$m_c,v_c$。若块$c$被淘汰时仅保存$\theta_c$而丢弃$m_c,v_c$，则再次换入后优化过程等价于对该块局部重启优化器，可能导致收敛速度下降和跨块外观不连续。因此，块序列化应保存：
+\begin{equation}
+\mathcal{S}_c = \{\theta_c,\ m_c,\ v_c,\ t_c,\ a_c\},
+\end{equation}
+其中$t_c$为优化步数，$a_c$为最近访问时间或统计量。只要换出与换入保持$\mathcal{S}_c$完整，后续梯度更新
+\begin{equation}
+(\theta_c,m_c,v_c) \leftarrow \operatorname{Adam}\big(\theta_c,m_c,v_c,\nabla_{\theta_c}\mathcal{L}_t\big)
+\end{equation}
+与块持续驻留GPU时在数学上保持一致，差异主要来自浮点序列化精度和异步调度时机。由此可知，本文采用自包含\schun 块格式保存锚点张量、追踪张量和优化器状态，是保证在线训练连续性的必要条件。
+
+\subsection{综合推论}
+
+综上，锚点压缩与分块外存管理存在互补关系：锚点压缩降低每个块的参数量和I/O字节数，分块管理限制GPU中同时参与渲染与优化的锚点集合；视锥剔除进一步保证只有与当前帧相关的块和锚点被展开为子高斯。因此，本文系统的理论复杂度可概括为：
+\begin{equation}
+\text{存储总量}=O(N_A),\quad
+\text{GPU驻留}=O(N_{\text{act}}),\quad
+\text{单帧渲染}=O(KN_{\text{vis}}),
+\end{equation}
+其中$N_{\text{act}}\ll N_A$为活跃锚点数，$N_{\text{vis}}\leq N_{\text{act}}$为视锥内可见锚点数。该推论为第三章的系统架构设计提供了理论依据：所有模块均应围绕“块级调度、锚点级存储、子高斯级渲染”三层粒度展开。
+
 \section{本章小结}
 
 本章介绍了3DGS的基本原理、Scaffold-GS的锚点压缩策略、DiskChunGS的分块外存管理以及视觉SLAM基础。这些技术构成了\ScaffoldChunGS 的理论基础。第三章将详细阐述如何将锚点压缩与分块管理深度融合到一个统一的系统框架中。
