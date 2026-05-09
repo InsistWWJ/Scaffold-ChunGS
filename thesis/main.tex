@@ -1,24 +1,37 @@
 % ===========================================================================
 % 中国地质大学（武汉）学士学位论文
-% Scaffold-ChunGS: 基于锚点压缩与分块外存管理的大场景3D高斯SLAM系统
+% 格式遵照《学士学位论文写作规范（2018版）》
 %
-% 编译方式: latexmk -xelatex main.tex
-% 或: make
+% 编译: make 或 xelatex -> biber -> xelatex -> xelatex
 % ===========================================================================
-\documentclass[zihao=-4,twoside,openright]{ctexbook}
+\documentclass[zihao=-4,twoside,openright,fontset=none]{ctexbook}
 
 % ---------------------------------------------------------------------------
-% 页面布局 —— 按学校 Word 模板调整
+% 页面布局（第3.1节）
+%   纸张 A4, 上/下 3cm, 左/右 3cm, 页眉 2.5cm, 页脚 2.0cm, 装订线 0cm
 % ---------------------------------------------------------------------------
-\usepackage[top=2.54cm, bottom=2.54cm, left=3.17cm, right=3.17cm, headheight=14pt]{geometry}
+\usepackage[paper=a4paper,
+            top=3cm, bottom=3cm,
+            left=3cm, right=3cm,
+            headheight=14pt,
+            headsep=0.5cm,
+            footskip=1cm,
+            includehead]{geometry}
 
 % ---------------------------------------------------------------------------
 % 字体设置
+%   正文: 宋体12磅(小四) + Times New Roman 12磅(小四)
+%   标题: 黑体(SimHei)
+%   固定行距20磅
 % ---------------------------------------------------------------------------
-\usepackage{fontspec}
 \setmainfont{Times New Roman}
-% 正文宋体, 标题黑体由 ctexbook 自动处理
-% 若需精确控制可以参考学校要求调整 \CJKfamily
+\setCJKmainfont{SimSun}[AutoFakeBold=2.5]
+\setCJKsansfont{SimHei}
+\setCJKmonofont{SimSun}
+
+% 固定行距20磅（第3.7节: 正文固定值行距20磅）
+\renewcommand{\normalsize}{\zihao{-4}}
+\setlength{\baselineskip}{20pt}
 
 % ---------------------------------------------------------------------------
 % 常用宏包
@@ -40,30 +53,74 @@
 \usepackage{xspace}
 
 % ---------------------------------------------------------------------------
-% 参考文献 (GB/T 7714-2005 顺序编码制)
+% 参考文献 GB/T 7714-2005 顺序编码制（第1.9节、第2.6节）
 % ---------------------------------------------------------------------------
 \usepackage[backend=biber,style=gb7714-2005,sorting=none]{biblatex}
 \addbibresource{thesis.bib}
 
 % ---------------------------------------------------------------------------
-% 页眉页脚 —— 双面印制
-%   奇数页左: 中国地质大学    偶数页右: 姓名：论文题目
+% 章/节标题格式（第2.3节、第3.7节）
+% ---------------------------------------------------------------------------
+\ctexset{
+    chapter = {
+        name = {第,章},
+        number = \chinese{chapter},
+        format = \heiti\zihao{3}\bfseries\centering,         % 黑体16磅(三号)加粗居中
+        nameformat = {},
+        numberformat = {},
+        titleformat = {},
+        beforeskip = 40pt,                                    % 上空2行 (20pt×2)
+        afterskip = 40pt,                                     % 下空2行
+        fixskip = true,
+    },
+    section = {
+        format = \heiti\zihao{4}\bfseries\centering,          % 黑体14磅(四号)加粗居中
+        beforeskip = 20pt,                                    % 上空1行
+        afterskip = 20pt,                                     % 下空1行
+        fixskip = true,
+    },
+    subsection = {
+        format = \heiti\zihao{-4}\bfseries\raggedright,      % 黑体12磅(小四)居左
+        beforeskip = 20pt,                                    % 上空1行
+        afterskip = 20pt,                                     % 下空1行
+        fixskip = true,
+    },
+    subsubsection = {
+        format = \heiti\zihao{-4}\bfseries\raggedright,
+        beforeskip = 12pt,
+        afterskip = 12pt,
+        fixskip = true,
+    },
+}
+
+% ---------------------------------------------------------------------------
+% 页眉页脚（第2.4节、第3.1节）
+%   奇数页居中: 中国地质大学学士学位论文
+%   偶数页居中: 作者姓名：论文题目
+%   页码在外侧, 宋体10.5磅(五号)
+%   页眉之下有一下划线
 % ---------------------------------------------------------------------------
 \pagestyle{fancy}
 \fancyhf{}
-% 请将"姓名"和"论文题目"替换为实际信息
-\fancyhead[LE]{\songti\zihao{-5}中国地质大学}
-\fancyhead[RO]{\songti\zihao{-5}XXX：基于锚点压缩与分块外存管理的大场景3D高斯SLAM系统设计与实现}
-\fancyfoot[C]{\thepage}
+\fancyhead[CO]{\zihao{5}\songti 中国地质大学学士学位论文}
+\fancyhead[CE]{\zihao{5}\songti XXX：基于锚点压缩与分块外存管理的大场景3D高斯SLAM系统设计与实现}
+\fancyfoot[RO]{\zihao{5}\songti \thepage}
+\fancyfoot[LE]{\zihao{5}\songti \thepage}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0pt}
 
-% 每章首页页眉样式
+% 章首页页眉（无内容，仅页脚）
 \fancypagestyle{plain}{
   \fancyhf{}
-  \fancyfoot[C]{\thepage}
+  \fancyfoot[RO]{\zihao{5}\songti \thepage}
+  \fancyfoot[LE]{\zihao{5}\songti \thepage}
   \renewcommand{\headrulewidth}{0pt}
 }
+
+% ---------------------------------------------------------------------------
+% 首行缩进2字符（第3.7节）
+% ---------------------------------------------------------------------------
+\ctexset{autoindent=2}
 
 % ---------------------------------------------------------------------------
 % 代码高亮
@@ -82,6 +139,32 @@
     language=C++,
     showstringspaces=false,
     captionpos=b,
+}
+
+% ---------------------------------------------------------------------------
+% 图/表编号格式：章内编号（第2.5节）
+%   如 "图3.2"、"表3.1"
+% ---------------------------------------------------------------------------
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+\numberwithin{equation}{chapter}
+
+% 图/表标题格式（第3.7节）
+%   图: 宋体10.5磅(五号)居中, 序号与名称间空1汉字
+%   表: 宋体10.5磅(五号)居中, 序号与名称间空1汉字
+\usepackage{caption}
+\DeclareCaptionFont{captionfont}{\songti\zihao{5}}
+\captionsetup[figure]{
+    font=captionfont,
+    labelsep=quad,
+    justification=centering,
+    position=bottom,
+}
+\captionsetup[table]{
+    font=captionfont,
+    labelsep=quad,
+    justification=centering,
+    position=top,
 }
 
 % ---------------------------------------------------------------------------
@@ -104,22 +187,25 @@
 % ===========================================================================
 \begin{document}
 
-% ───────────────────────────────────────────────────────────────────────────
-% 中文封面（附件1）
-% ───────────────────────────────────────────────────────────────────────────
+% ═══════════════════════════════════════════════════════════════════════════
+% 中文封面（第1.1节、第3.2节、附件1）
+% ═══════════════════════════════════════════════════════════════════════════
 \begin{titlepage}
 \centering
 
 \vspace*{3cm}
 
-{\heiti\zihao{1} 学士学位论文}
+% 学士学位论文 — 宋体26磅(一号)加粗
+{\songti\zihao{1}\bfseries 学士学位论文}
 
 \vspace{2.5cm}
 
-{\heiti\zihao{2} \textbf{\\论文题目}}
+% 论文题目 — 黑体22磅(二号)加粗居中
+{\heiti\zihao{2}\bfseries 基于锚点压缩与分块外存管理的大场景\\[6pt]3D高斯SLAM系统设计与实现}
 
 \vspace{3.5cm}
 
+% 信息行 — 学号Times New Roman 16磅(三号), 其余宋体16磅(三号)
 {\songti\zihao{3}
 \begin{tabular}{r@{：}l}
 学\qquad 号 & \makebox[5cm]{\hrulefill} \\
@@ -133,16 +219,16 @@
 
 \vspace{2cm}
 
+% 日期 — 宋体16磅(三号)汉字
 {\songti\zihao{3} 二○\quad 年\quad 月}
 
 \end{titlepage}
 
-% ───────────────────────────────────────────────────────────────────────────
-% 原创性声明（附件2）
-% ───────────────────────────────────────────────────────────────────────────
+% ═══════════════════════════════════════════════════════════════════════════
+% 原创性声明（第1.2节、附件2）
+% ═══════════════════════════════════════════════════════════════════════════
 \newpage
 \thispagestyle{empty}
-\vspace*{1cm}
 
 \begin{center}
 {\heiti\zihao{3} 中国地质大学（武汉）学士学位论文原创性声明}
@@ -150,7 +236,7 @@
 
 \vspace{1.5cm}
 
-{\songti\zihao{4}
+{\songti\zihao{-4}
 本人郑重声明：本人所呈交的学士学位论文《\textbf{基于锚点压缩与分块外存管理的大场景3D高斯SLAM系统设计与实现}》，是本人在指导老师的指导下，在中国地质大学（武汉）攻读学士学位期间独立进行研究工作所取得的成果。论文中除已注明部分外不包含他人已发表或撰写过的研究成果，对论文的完成提供过帮助的有关人员已在文中说明并致以谢意。
 
 \vspace{1cm}
@@ -165,10 +251,14 @@
 \end{flushright}
 }
 
-% ───────────────────────────────────────────────────────────────────────────
-% 中文摘要
-% ───────────────────────────────────────────────────────────────────────────
-\chapter*{摘\quad 要}
+% ═══════════════════════════════════════════════════════════════════════════
+% 中文摘要（第1.3节、第3.5节）
+%   标题: 黑体18磅(小二)加粗居中
+%   正文: 宋体12磅(小四), 固定行距20磅
+%   关键词: "关键词"三字加粗
+% ═══════════════════════════════════════════════════════════════════════════
+\chapter*{\heiti\zihao{-2}\bfseries 摘\quad 要}
+\addcontentsline{toc}{chapter}{摘要}
 
 3D高斯泼溅（3D Gaussian Splatting, 3DGS）近年来在三维场景重建与实时渲染领域取得了突破性进展，并逐步被引入视觉SLAM系统中。然而，标准3DGS面临两大瓶颈：（1）每个高斯椭球体需存储59个独立参数，导致稠密重建时GPU显存占用巨大；（2）场景规模受限于显存容量，无法处理大范围环境。
 
@@ -185,10 +275,13 @@
 \vspace{1em}
 \noindent\textbf{关键词：}3D高斯泼溅；视觉SLAM；场景压缩；外存管理；锚点表示
 
-% ───────────────────────────────────────────────────────────────────────────
-% 英文摘要 (Abstract)
-% ───────────────────────────────────────────────────────────────────────────
-\chapter*{Abstract}
+% ═══════════════════════════════════════════════════════════════════════════
+% 英文摘要（第1.4节、第3.5节）
+%   标题: Times New Roman 18磅(小二)加粗居中
+%   正文: Times New Roman 12磅(小四), 固定行距20磅
+% ═══════════════════════════════════════════════════════════════════════════
+\chapter*{\zihao{-2}\bfseries Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
 
 3D Gaussian Splatting (3DGS) has achieved breakthroughs in 3D scene reconstruction and real-time rendering, and has been increasingly integrated into visual SLAM systems. However, standard 3DGS faces two major bottlenecks: (1) each Gaussian ellipsoid requires 59 independent parameters, leading to prohibitive GPU memory consumption in dense reconstruction; (2) the scene scale is limited by GPU memory capacity, preventing handling of large-scale environments.
 
@@ -205,23 +298,29 @@ Experiments on a synthetic sphere scene validate the system's functional complet
 \vspace{1em}
 \noindent\textbf{Keywords:} 3D Gaussian Splatting; Visual SLAM; Scene Compression; Out-of-Core Memory; Anchor-Based Representation
 
-% ───────────────────────────────────────────────────────────────────────────
-% 目录
-% ───────────────────────────────────────────────────────────────────────────
+% ═══════════════════════════════════════════════════════════════════════════
+% 目录（第1.5节、第3.6节）
+%   标题: 黑体16磅(三号)加粗居中
+% ═══════════════════════════════════════════════════════════════════════════
 \tableofcontents
 
-% 图清单（可选，若有图则建议保留）
+% 图清单（第1.6节）
 \clearpage
-\renewcommand{\listfigurename}{图清单}
+\renewcommand{\listfigurename}{\heiti\zihao{3}\bfseries 图清单}
 \listoffigures
 
-% 表清单（可选）
-\renewcommand{\listtablename}{表清单}
+% 表清单
+\renewcommand{\listtablename}{\heiti\zihao{3}\bfseries 表清单}
 \listoftables
 
 % ===========================================================================
-% 正文
+% 正文（第1.7节、第3.7节）
 % ===========================================================================
+% 正文页眉从第一章开始，重新设置页码
+\clearpage
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
 \input{chapters/ch1-intro.tex}
 \input{chapters/ch2-background.tex}
 \input{chapters/ch3-design.tex}
@@ -229,17 +328,19 @@ Experiments on a synthetic sphere scene validate the system's functional complet
 \input{chapters/ch5-summary.tex}
 
 % ===========================================================================
-% 参考文献 (GB/T 7714-2005 顺序编码制)
+% 参考文献（第1.9节、第3.8节）
+%   标题格式同章标题（黑体16磅三号加粗居中）
 % ===========================================================================
 \printbibliography[heading=bibintoc,title={参考文献}]
 
 % ===========================================================================
-% 致谢
+% 致谢（第1.8节、第3.8节）
+%   标题同章标题, 正文宋体12磅(小四), 行距20磅
 % ===========================================================================
 \chapter*{致\quad 谢}
 \addcontentsline{toc}{chapter}{致谢}
 
-% （在此处填写致谢内容）
+% （致谢内容）
 
 \vspace{3cm}
 
@@ -249,7 +350,7 @@ Experiments on a synthetic sphere scene validate the system's functional complet
 \end{flushright}
 
 % ===========================================================================
-% 附录（可选，根据实际需要决定是否添加）
+% 附录（第1.10节、第3.8节）
 % ===========================================================================
 % \appendix
 % \chapter{系统配置参数表}
