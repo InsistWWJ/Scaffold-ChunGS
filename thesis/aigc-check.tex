@@ -39,10 +39,11 @@
 \usepackage{xcolor}
 \usepackage{hyperref}
 \usepackage{enumitem}
+\usepackage{fancyhdr}
 \usepackage{xspace}
 
-% (biblatex 已移除，引用标记静默丢弃)
-\newcommand{\cite}[2][]{}
+% (biblatex 已移除，引用标记在文档开始处静默丢弃)
+\AtBeginDocument{\renewcommand{\cite}[2][]{}}
 
 \ctexset{
     chapter = {
