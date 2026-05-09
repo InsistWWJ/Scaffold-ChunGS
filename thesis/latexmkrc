@@ -1,7 +1,7 @@
 # latexmk configuration for Scaffold-ChunGS thesis
 # 中国地质大学（武汉）学士学位论文
 # xelatex (ctex Chinese) + biber (GB/T 7714-2005)
-$pdf_mode = 1;
+$pdf_mode = 5;
 $xelatex = "xelatex -synctex=1 -interaction=nonstopmode %O %S";
 $bibtex = "biber %O %B";
 $clean_ext = "bbl bcf blg run.xml auxlock thm loa lot lof toc out";

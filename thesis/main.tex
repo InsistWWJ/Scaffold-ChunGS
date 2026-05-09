@@ -29,9 +29,17 @@
 \setCJKsansfont{SimHei}
 \setCJKmonofont{SimSun}
 
+% fontset=none 时需手动定义 ctex 字体命令
+\newCJKfontfamily\songti{SimSun}[AutoFakeBold=2.5]
+\newCJKfontfamily\heiti{SimHei}
+\newCJKfontfamily\kaishu{KaiTi}
+\newCJKfontfamily\fangsong{FangSong}
+
 % 固定行距20磅（第3.7节: 正文固定值行距20磅）
+% 段前0磅，段后0磅（第3.7节: 段落间距为0）
 \renewcommand{\normalsize}{\zihao{-4}}
 \setlength{\baselineskip}{20pt}
+\setlength{\parskip}{0pt}
 
 % ---------------------------------------------------------------------------
 % 常用宏包
@@ -208,10 +216,10 @@
 % 信息行 — 学号Times New Roman 16磅(三号), 其余宋体16磅(三号)
 {\songti\zihao{3}
 \begin{tabular}{r@{：}l}
-学\qquad 号 & \makebox[5cm]{\hrulefill} \\
-姓\qquad 名 & \makebox[5cm]{\hrulefill} \\
-学 科 专 业 & \makebox[5cm]{\hrulefill} \\
-指 导 教 师 & \makebox[5cm]{\hrulefill} \quad 职称 \\
+学\qquad 号 & \makebox[5cm]{20221003247} \\
+姓\qquad 名 & \makebox[5cm]{万文杰} \\
+学 科 专 业 & \makebox[5cm]{遥感科学与技术} \\
+指 导 教 师 & \makebox[5cm]{王红平} \quad 职称 \\
               & \makebox[5cm]{\hrulefill} \quad 职称 \\
 培 养 单 位 & \makebox[5cm]{\hrulefill} \\
 \end{tabular}

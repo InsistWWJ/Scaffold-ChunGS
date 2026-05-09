@@ -78,7 +78,7 @@ $\downarrow$ \\
 
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
     \item \textbf{输入：}稠密点云$\mathcal{P}=\{(\mathbf{p}_j,\mathbf{c}_j)\}_{j=1}^{M}$（来自RGB-D初始帧或SFM前端）。
-    \item 以`voxel\_size`（典型值0.01 m）为步长对$\mathcal{P}$进行均匀体素化。
+    \item 以 \texttt{voxel\_size}（典型值0.01 m）为步长对$\mathcal{P}$进行均匀体素化。
     \item 对每个非空体素，计算该体素内所有点的平均颜色$\bar{\mathbf{c}}$。
     \item \textbf{创建锚点：}
         \begin{itemize}
@@ -98,7 +98,7 @@ $\downarrow$ \\
 
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
     \item 将新点云体素化，筛选出未覆盖的体素。
-    \item 以现有锚点位置为基准，执行半径过滤（radius-based duplicate filtering）：若新体素中心与任一现有锚点的距离小于`voxel\_size / 2`，则跳过。
+    \item 以现有锚点位置为基准，执行半径过滤（radius-based duplicate filtering）：若新体素中心与任一现有锚点的距离小于 \texttt{voxel\_size / 2}，则跳过。
     \item 对通过筛选的新锚点，分配全局唯一递增ID，追加至各参数张量的末尾。
 \end{enumerate}
 
@@ -115,12 +115,12 @@ MLP解码器是锚点压缩的核心组件（实现于\verb|src/model/model_mlp.
 \textbf{MLP结构：}
 
 \begin{itemize}
-    \item \textbf{`mlp\_opacity\_`}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{K}\to\operatorname{Tanh}$。输出$K$个tanh值，经sigmoid转换后作为$K$个子高斯的不透明度。
-    \item \textbf{`mlp\_cov\_`}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{7K}$。输出$K$组$(\Delta s_x,\Delta s_y,\Delta s_z,\,q_w,q_x,q_y,q_z)$——3个尺度残差（与基础尺度相加）及4个旋转四元数分量（归一化后形成单位四元数）。
-    \item \textbf{`mlp\_color\_`}：$\mathbb{R}^{D+3+1+A}\to\mathbb{R}^{D}\to\mathbb{R}^{3K}\to\operatorname{Sigmoid}$。若配置了外观嵌入维度$A>0$，则将每相机的外观嵌入向量拼接至输入。
+    \item \textbf{\texttt{mlp\_opacity\_}}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{K}\to\operatorname{Tanh}$。输出$K$个tanh值，经sigmoid转换后作为$K$个子高斯的不透明度。
+    \item \textbf{\texttt{mlp\_cov\_}}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{7K}$。输出$K$组$(\Delta s_x,\Delta s_y,\Delta s_z,\,q_w,q_x,q_y,q_z)$——3个尺度残差（与基础尺度相加）及4个旋转四元数分量（归一化后形成单位四元数）。
+    \item \textbf{\texttt{mlp\_color\_}}：$\mathbb{R}^{D+3+1+A}\to\mathbb{R}^{D}\to\mathbb{R}^{3K}\to\operatorname{Sigmoid}$。若配置了外观嵌入维度$A>0$，则将每相机的外观嵌入向量拼接至输入。
 \end{itemize}
 
-\textbf{可选组件 -- `mlp\_feature\_bank\_`：}当`use_feat_bank`开启时，对锚点特征进行3分辨率注意力融合\cite{lu2024scaffoldgs}，提升视角适应能力。该功能默认关闭以控制参数总量。
+\textbf{可选组件 —— \texttt{mlp\_feature\_bank\_}：}当 \texttt{use\_feat\_bank} 开启时，对锚点特征进行3分辨率注意力融合\cite{lu2024scaffoldgs}，提升视角适应能力。该功能默认关闭以控制参数总量。
 
 \textbf{AnchorMLP::expandAnchorsToGaussians} 方法的处理流程：
 
@@ -147,7 +147,7 @@ MLP解码器是锚点压缩的核心组件（实现于\verb|src/model/model_mlp.
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
     \item 统计每个锚点子偏移的累积梯度$\sum\|\nabla_{\mathbf{o}_i^k}\|$。
     \item 对梯度超过$\tau_{\text{grad}}=2\times10^{-4}$的锚点，以其高梯度子偏移位置为种子。
-    \item 对种子进行`update\_depth`=3层级的体素细分：
+    \item 对种子进行 \texttt{update\_depth}=3 层级的体素细分：
         \begin{itemize}
             \item 第0层：体素尺寸$v_s\times\text{update\_init\_factor}=v_s\times100$
             \item 第$l$层：体素尺寸缩小$\text{update\_hierarchy\_factor}=4$倍
