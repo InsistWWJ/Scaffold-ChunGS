@@ -3,7 +3,9 @@
     "allow": [
       "Bash(git -C \"e:/Project/SLAM/Scaffold-ChunGS\" log --oneline -20)",
       "Bash(python3 -c ' *)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(grep \"\\\\\\\\\\\\cite\" chapters/ch1-intro.tex chapters/ch2-background.tex chapters/ch3-design.tex chapters/ch4-experiments.tex chapters/ch5-summary.tex)",
+      "Bash(cmd.exe /c \"where perl\")"
     ]
   }
 }

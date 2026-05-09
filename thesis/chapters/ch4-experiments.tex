@@ -190,17 +190,72 @@ MLP参数量 & 0 & $\sim$3$\times$(D$\times$D) $\approx$ 3K floats \\
 
 分析$S_{\text{chunk}}\in\{10, 20, 50\}$（世界单位）对LRU命中率与I/O吞吐的影响。小块的淘汰粒度更精细但I/O频率更高；大块的I/O摊销更优但可能导致不必要的锚点加载。
 
+\section{真实场景数据集评测设计}
+
+\subsection{KITTI数据集}
+
+DiskChunGS\cite{feldmann2026diskchungs}在KITTI数据集上验证了分块外存管理在大规模室外场景下的有效性。为与DiskChunGS进行公平对标，\ScaffoldChunGS 同样选择KITTI作为室外大规模评测数据集。
+
+KITTI数据集\cite{Geiger2012CVPR}是自动驾驶与视觉SLAM领域最广泛使用的基准数据集之一，由德国卡尔斯鲁厄理工学院和丰田芝加哥研究院于2012年联合发布。数据集采集平台搭载以下传感器：
+
+\begin{itemize}
+    \item \textbf{立体相机：}2台Point Grey Flea2（FL2-14S3），分辨率$1392\times 512$，基线约54 cm，帧率10 fps。
+    \item \textbf{激光雷达：}Velodyne HDL-64E，64线，10 fps，提供稠密3D点云。
+    \item \textbf{GPS/IMU：}OXTS RT3003组合导航系统，提供厘米级位姿真值（用于评测）。
+\end{itemize}
+
+KITTI Odometry子集包含22个序列（00--21），其中序列00--10（共11个）提供位姿真值，是SLAM/里程计评测的标准基准。代表性序列覆盖场景包括：
+
+\begin{itemize}
+    \item \textbf{城市道路（00、01、02、05、06）：}长距离城市驾驶（序列00长达3.7 km），含大量动态物体（车辆、行人）。
+    \item \textbf{住宅区（03、04）：}中等长度，道路较窄，弯道多。
+    \item \textbf{乡村/公路（07、09、10）：}高速场景，纹理稀疏。
+    \item \textbf{校园（08）：}短距离，低动态。
+\end{itemize}
+
+\subsection{评测指标}
+
+针对KITTI数据集，采用以下SLAM标准评测指标：
+
+\begin{itemize}
+    \item \textbf{绝对轨迹误差（Absolute Trajectory Error, ATE）：}评估估计轨迹与真值轨迹之间的全局一致性。通常使用Umeyama对齐后计算均方根误差：
+    \begin{equation}
+    \text{ATE}_{\text{RMSE}} = \sqrt{\frac{1}{N}\sum_{i=1}^{N}\|\mathbf{p}_i^{\text{est}} - \mathbf{p}_i^{\text{gt}}\|^2}
+    \end{equation}
+    \item \textbf{相对位姿误差（Relative Pose Error, RPE）：}评估局部时间窗口内的漂移量，常用窗口$\Delta = 100$--800帧，输出平移与旋转误差：
+    \begin{equation}
+    \text{RPE}_{\text{trans}}(\Delta) = \sqrt{\frac{1}{N-\Delta}\sum_{i=1}^{N-\Delta}\|(\mathbf{p}_{i+\Delta} - \mathbf{p}_i)^{\text{est}} - (\mathbf{p}_{i+\Delta} - \mathbf{p}_i)^{\text{gt}}\|^2}
+    \end{equation}
+    \item \textbf{渲染质量指标：}PSNR、SSIM、LPIPS，评估新视角合成的视觉质量。
+    \item \textbf{内存与I/O指标：}GPU显存占用峰值、磁盘I/O吞吐量、LRU命中率。
+\end{itemize}
+
+\subsection{评测方案}
+
+按以下方案在KITTI数据集上评测\ScaffoldChunGS：
+
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item \textbf{序列拆分：}参照KITTI基准惯例，取序列00--08为训练/调参集，序列09--10为测试集。
+    \item \textbf{初始化：}利用序列前若干帧通过双目视差估计生成初始点云，经体素化后初始化锚点。
+    \item \textbf{训练流程：}沿轨迹逐帧输入立体图像与LiDAR深度，运行锚点生长、剪枝与块换入换出，记录ATE、RPE及渲染指标。
+    \item \textbf{对比基线：}以DiskChunGS\cite{feldmann2026diskchungs}作为主要对标方法（二者共享分块外存管理框架，\ScaffoldChunGS 额外引入锚点压缩），同时与ORB-SLAM3\cite{mur2017orb}（标准几何SLAM）、Compact\_GSSLAM\cite{chen2025compact}（锚点压缩SLAM）进行定量对比。
+    \item \textbf{压缩优势验证：}在KITTI序列00（最长城市序列，约3.7 km）上对比\ScaffoldChunGS 与DiskChunGS的磁盘占用总量与I/O吞吐量，验证锚点压缩带来的存储与带宽收益。
+    \item \textbf{分块扩展性验证：}监测\ScaffoldChunGS 在KITTI序列00全轨迹运行期间GPU显存的稳定性，验证LRU淘汰机制能否在大规模室外场景下维持可控显存占用。
+\end{enumerate}
+
+注：本节定义了评测方案与指标体系，完整的定量实验结果待系统集成与调优后填入。
+
 \section{局限性分析}
 
 尽管实验验证了\ScaffoldChunGS 的功能有效性，系统仍存在以下局限：
 
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
     \item \textbf{简化光栅化器。}当前CUDA光栅化器为点泼溅简化版，渲染质量与INRIA原始tile排序实现有差距。与SOTA的PSNR对比需待光栅化器升级后进行。
-    \item \textbf{缺乏真实数据集评测。}当前仅通过合成球面场景验证了流水线完整性，缺少在TUM RGB-D、Replica、ScanNet等标准数据集上的定量对比。
+    \item \textbf{真实数据集评测待完成。}当前仅通过合成球面场景验证了流水线完整性，并仅在4.6节设计了KITTI数据集的评测方案。在TUM RGB-D、Replica、ScanNet等室内数据集与KITTI室外数据集上的完整定量对比仍待实施。
     \item \textbf{未集成闭环检测。}位姿估计依赖外部提供，无地图级回环修正，长期累计漂移问题未解决。
     \item \textbf{优化器重建开销。}锚点生长后需重建Adam优化器（`trainingSetup`），当前实现简单但低效——新锚点的优化器状态从零开始，而旧锚点状态被完整保留，造成优化器内存碎片化。
 \end{enumerate}
 
 \section{本章小结}
 
-本章在合成场景上对\ScaffoldChunGS 系统进行了功能验证与性能分析。实验表明系统能完成端到端的锚点初始化、训练、稠密化与渲染流程。压缩分析确认了约8.6倍的理论存储压缩比。分块内存管理机制在理论层面能有效扩展场景规模至磁盘容量上限。消融实验的设计为后续完整评测提供了分析框架。
+本章在合成场景上对\ScaffoldChunGS 系统进行了功能验证与性能分析。实验表明系统能完成端到端的锚点初始化、训练、稠密化与渲染流程。压缩分析确认了约8.6倍的理论存储压缩比。分块内存管理机制在理论层面能有效扩展场景规模至磁盘容量上限。消融实验的设计为后续完整评测提供了分析框架。此外，本章还设计了KITTI室外自动驾驶数据集的评测方案，为系统在真实大规模场景下的验证提供了路线图。

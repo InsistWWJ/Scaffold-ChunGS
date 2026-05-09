@@ -48,7 +48,7 @@
         将DepthLab\cite{kopf2024depthlab}等扩散式深度补全模型作为深度先验集成至系统中，改善在稀疏或含噪深度输入条件下的重建质量。
 
     \item \textbf{真实数据集全面评测。}
-        在标准SLAM/三维重建数据集（TUM RGB-D\cite{sturm2012tum}、Replica\cite{straub2019replica}、ScanNet\cite{dai2017scannet}、EuRoC MAV\cite{burri2016euroc}）上进行全面的定量评测，并与Compact\_GSSLAM、DiskChunGS、Photo-SLAM等baseline进行系统对比。
+        在室内RGB-D数据集（TUM RGB-D\cite{sturm2012tum}、Replica\cite{straub2019replica}、ScanNet\cite{dai2017scannet}）上评测跟踪精度与重建质量；在室外KITTI数据集\cite{Geiger2012CVPR}上与DiskChunGS\cite{feldmann2026diskchungs}进行对标评测（ATE/RPE/渲染质量/磁盘占用），验证锚点压缩在分块外存管理基础上的增量收益。同时与Compact\_GSSLAM、Photo-SLAM等baseline进行系统对比。
 
     \item \textbf{嵌入式平台适配。}
         针对Jetson AGX Orin等嵌入式平台进行CUDA kernel优化与内存精简，实现边缘端的大场景稠密SLAM。
