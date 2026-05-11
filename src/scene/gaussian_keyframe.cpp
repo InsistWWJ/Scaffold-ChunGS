@@ -29,14 +29,14 @@ Eigen::Vector3f GaussianKeyframe::getTranslation() const {
   return Tcw_.block<3,1>(0,3);
 }
 
-torch::Tensor GaussianKeyframe::getCameraCenter() const {
+torch::Tensor GaussianKeyframe::getCameraCenter(torch::DeviceType device) const {
   // Camera center in world coordinates = -R^T * t
   Eigen::Matrix3f R = Tcw_.block<3,3>(0,0);
   Eigen::Vector3f t = Tcw_.block<3,1>(0,3);
   Eigen::Vector3f center = -R.transpose() * t;
 
   return torch::tensor({center.x(), center.y(), center.z()},
-      torch::TensorOptions().dtype(torch::kFloat32));
+      torch::TensorOptions().dtype(torch::kFloat32).device(device));
 }
 
 // =============================================================================
@@ -58,8 +58,8 @@ void GaussianKeyframe::setIntrinsics(float fx, float fy, float cx, float cy,
 // Transform Tensors
 // =============================================================================
 
-void GaussianKeyframe::computeTransformTensors() {
-  auto opt = torch::TensorOptions().dtype(torch::kFloat32);
+void GaussianKeyframe::computeTransformTensors(torch::DeviceType device) {
+  auto opt = torch::TensorOptions().dtype(torch::kFloat32).device(device);
 
   // World-to-view: inverse of Tcw
   Eigen::Matrix4f w2v = Tcw_.inverse();
@@ -70,7 +70,7 @@ void GaussianKeyframe::computeTransformTensors() {
       w2v_flat.push_back(w2v(r, c));
   world_view_transform_ = torch::tensor(w2v_flat, opt).reshape({4, 4}).t();
 
-  // Projection matrix (OpenGL style)
+  // Projection matrix (OpenGL style, column-major via .t())
   float tan_half_fovx = std::tan(FoVx_ * 0.5f);
   float tan_half_fovy = std::tan(FoVy_ * 0.5f);
 
@@ -87,7 +87,7 @@ void GaussianKeyframe::computeTransformTensors() {
   full_proj_transform_ = torch::matmul(projection_matrix_, world_view_transform_);
 
   // Camera center
-  camera_center_ = getCameraCenter();
+  camera_center_ = getCameraCenter(device);
 }
 
 // =============================================================================

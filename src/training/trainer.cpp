@@ -17,6 +17,7 @@
 #include "scaffold_chunks/keyframe_selection.h"
 #include "scaffold_chunks/frustum_culler.h"
 #include "scaffold_chunks/config.h"
+#include "scaffold_chunks/training_loss.h"
 
 #include <iostream>
 #include <chrono>
@@ -24,26 +25,6 @@
 #include <cmath>
 
 namespace scaffold_chungs {
-
-// Forward declaration of loss computation
-struct TrainingLoss {
-  torch::Tensor total;   // combined loss tensor for backward()
-  float l1_color = 0;
-  float ssim_value = 0;
-  float depth_l1 = 0;
-  float isotropic = 0;
-};
-
-TrainingLoss computeLosses(
-    const torch::Tensor& rendered_color,
-    const torch::Tensor& rendered_depth,
-    const torch::Tensor& gt_image,
-    const torch::Tensor& gt_depth,
-    const torch::Tensor& child_scaling,
-    const torch::Tensor& mask,
-    float lambda_dssim,
-    float lambda_depth,
-    float lambda_isotropic);
 
 // =============================================================================
 // ScaffoldTrainer
@@ -109,11 +90,12 @@ float ScaffoldTrainer::trainOneIteration() {
   // Ensure keyframe tensors are on GPU
   kf->transferToGPU(model_->deviceType());
 
-  // Step 2: Compute transforms
-  kf->computeTransformTensors();
-  auto camera_center = kf->getCameraCenter().to(model_->deviceType());
-  auto w2v = kf->worldViewTransform().to(model_->deviceType());
-  auto proj = kf->projectionMatrix().to(model_->deviceType());
+  // Step 2: Compute transforms directly on model's device
+  auto dev = model_->deviceType();
+  kf->computeTransformTensors(dev);
+  auto camera_center = kf->getCameraCenter(dev);
+  auto w2v = kf->worldViewTransform();
+  auto proj = kf->projectionMatrix();
 
   // Step 3: Frustum cull + load visible chunks
   Eigen::Vector3f cc_eigen(camera_center[0].item<float>(),
@@ -172,7 +154,7 @@ float ScaffoldTrainer::trainOneIteration() {
   // Step 8: Record loss for keyframe selection
   keyframe_selector_->recordLoss(kf->fid(), loss.total.item<float>());
 
-  // Step 9: Periodic densification
+  // Step 9: Periodic densification (adjustAnchors handles optimizer internally)
   if (current_iteration_ % opt_cfg_.densify_check_interval == 0 &&
       current_iteration_ > 0) {
     model_->adjustAnchors(
@@ -180,9 +162,6 @@ float ScaffoldTrainer::trainOneIteration() {
         opt_cfg_.prune_success_threshold,
         opt_cfg_.densify_grad_threshold,
         opt_cfg_.densify_opacity_threshold);
-
-    // Rebuild optimizer after anchor count changes
-    model_->trainingSetup(opt_cfg_);
   }
 
   current_iteration_++;
@@ -271,6 +250,10 @@ ScaffoldChunGSConfig ScaffoldChunGSConfig::fromYAML(const std::string& config_pa
   cfg.anchor.densify_opacity_threshold =
       static_cast<float>(fs["Anchor.densify_opacity_threshold"]);
   cfg.anchor.densify_check_interval = static_cast<int>(fs["Anchor.densify_check_interval"]);
+  cfg.anchor.prune_opacity_threshold =
+      static_cast<float>(fs["Anchor.prune_opacity_threshold"]);
+  cfg.anchor.prune_check_interval = static_cast<int>(fs["Anchor.prune_check_interval"]);
+  cfg.anchor.prune_success_threshold = static_cast<int>(fs["Anchor.prune_success_threshold"]);
 
   // Chunk section
   cfg.chunk.chunk_size = static_cast<float>(fs["Chunk.chunk_size"]);
@@ -301,6 +284,9 @@ ScaffoldChunGSConfig ScaffoldChunGSConfig::fromYAML(const std::string& config_pa
   cfg.optimization.max_num_iterations = static_cast<int>(fs["Optimization.max_num_iterations"]);
   cfg.optimization.new_keyframe_times_of_use =
       static_cast<int>(fs["Optimization.new_keyframe_times_of_use"]);
+  cfg.optimization.stable_num_iter_existence =
+      static_cast<int>(fs["Optimization.stable_num_iter_existence"]);
+  cfg.optimization.smooth_l1 = static_cast<int>(fs["Optimization.smooth_l1"]) != 0;
   cfg.optimization.spatial_lr_scale = static_cast<float>(fs["Optimization.spatial_lr_scale"]);
 
   // Camera section
@@ -316,6 +302,15 @@ ScaffoldChunGSConfig ScaffoldChunGSConfig::fromYAML(const std::string& config_pa
       static_cast<int>(fs["Keyframe.min_num_initial_map_kfs"]);
   cfg.keyframe.gaus_pyramid_sub_levels =
       static_cast<int>(fs["Keyframe.gaus_pyramid_sub_levels"]);
+
+  // Parse gaus_pyramid_factors if present
+  cv::FileNode factors_node = fs["Keyframe.gaus_pyramid_factors"];
+  if (!factors_node.empty()) {
+    cfg.keyframe.gaus_pyramid_factors.clear();
+    for (const auto& v : factors_node) {
+      cfg.keyframe.gaus_pyramid_factors.push_back(static_cast<float>(v));
+    }
+  }
 
   // Device
   cfg.data_device = static_cast<std::string>(fs["Device.data_device"]);

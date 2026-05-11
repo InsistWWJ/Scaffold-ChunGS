@@ -47,6 +47,19 @@ endif()
 
 find_package(OpenMP REQUIRED)
 
+# Optional: INRIA diff_gaussian_rasterization CUDA kernel
+# When available, link against this for real-time rendering.
+# Clone from: https://github.com/graphdeco-inria/diff-gaussian-rasterization
+set(DIFF_GAUSSIAN_RASTERIZATION_DIR
+    ${CMAKE_SOURCE_DIR}/third_party/diff_gaussian_rasterization
+    CACHE PATH "Path to diff_gaussian_rasterization")
+if(EXISTS ${DIFF_GAUSSIAN_RASTERIZATION_DIR})
+  message(STATUS "Found CUDA rasterizer at ${DIFF_GAUSSIAN_RASTERIZATION_DIR}")
+  add_definitions(-DHAVE_CUDA_RASTERIZER)
+else()
+  message(STATUS "CUDA rasterizer not found — using pure-LibTorch fallback")
+endif()
+
 # Optional: GLFW + OpenGL for viewer
 find_package(glfw3 QUIET)
 find_package(OpenGL QUIET)
@@ -80,9 +93,14 @@ set(SCAFFOLD_CHUNGS_SOURCES
     # Scene
     src/scene/gaussian_keyframe.cpp
     src/scene/gaussian_scene.cpp
+    src/scene/keyframe_selection.cpp
     # Training
     src/training/trainer.cpp
-    src/training/losses.cpp)
+    src/training/losses.cpp
+    # Depth Estimation
+    src/depth/depth_estimator.cpp
+    # Mapper Pipeline
+    src/mapper/mapper_core.cpp)
 
 add_library(scaffold_chungs SHARED ${SCAFFOLD_CHUNGS_SOURCES})
 

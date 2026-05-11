@@ -144,29 +144,6 @@ std::vector<torch::Tensor> AnchorMLP::parameters() {
 // Core Expansion Logic
 // =============================================================================
 
-static void computeViewInfo(const torch::Tensor& anchor,
-                            const torch::Tensor& camera_center,
-                            torch::Tensor& ob_view,
-                            torch::Tensor& ob_dist,
-                            torch::Tensor& cat_local_view,
-                            torch::Tensor& cat_local_view_wodist,
-                            int feat_dim,
-                            bool add_any_dist) {
-  // ob_view = norm(anchor - camera_center)  [V, 3]
-  ob_view = anchor - camera_center;
-  ob_dist = torch::norm(ob_view, 2, 1, true);       // [V, 1]
-  ob_view = ob_view / (ob_dist + 1e-8f);             // [V, 3]
-
-  // Concatenate features + view direction [+ optional distance]
-  // cat_local_view      = [feat, ob_view, ob_dist]   (for opacity & cov)
-  // cat_local_view_wodist = [feat, ob_view]           (for color)
-  if (add_any_dist) {
-    cat_local_view = torch::cat({ob_view, ob_dist}, 1);  // placeholder
-  } else {
-    cat_local_view_wodist = ob_view;
-  }
-}
-
 ExpandedGaussians AnchorMLP::expandAnchorsForInference(
     const AnchorData& anchors,
     const torch::Tensor& camera_center,

@@ -1,0 +1,40 @@
+{
+    "latex-workshop.latex.recipes": [
+        {
+            "name": "xelatex → biber → xelatex ×2",
+            "tools": [
+                "xelatexmk",
+                "biber",
+                "xelatexmk",
+                "xelatexmk"
+            ]
+        }
+    ],
+    "latex-workshop.latex.tools": [
+        {
+            "name": "xelatexmk",
+            "command": "latexmk",
+            "args": [
+                "-pdfxe",
+                "-synctex=1",
+                "-interaction=nonstopmode",
+                "-file-line-error",
+                "-outdir=%OUTDIR%",
+                "-auxdir=%OUTDIR%",
+                "%DOC%"
+            ]
+        },
+        {
+            "name": "biber",
+            "command": "biber",
+            "args": [
+                "%DOCFILE%"
+            ]
+        }
+    ],
+    "latex-workshop.latex.recipe.default": "xelatex → biber → xelatex ×2",
+    "latex-workshop.latex.autoBuild.run": "onFileChange",
+    "latex-workshop.latex.autoClean.run": "never",
+    "latex-workshop.latex.watch.files.engine": "builtin",
+    "latex-workshop.latex.watch.usePolling": false
+}

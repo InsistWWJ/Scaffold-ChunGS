@@ -40,36 +40,48 @@ static size_t getGPUMemoryUsage() {
 torch::Tensor GaussianModel::findLRUChunks(
     const torch::Tensor& candidate_chunks,
     int64_t target_anchor_count) {
-  auto chunks_cpu = candidate_chunks.cpu();
-  auto accessor = chunks_cpu.accessor<int64_t, 1>();
-  int64_t num_candidates = chunks_cpu.size(0);
+  int64_t num_candidates = candidate_chunks.size(0);
+  if (num_candidates == 0) {
+    return torch::empty({0}, torch::TensorOptions().dtype(torch::kInt64)
+        .device(candidate_chunks.device()));
+  }
 
-  // Collect (chunk_id, access_time, anchor_count) for sorting
+  // Batch-compute anchor counts via bincount on flat chunk IDs
+  torch::Tensor chunk_ids_flat = anchor_chunk_ids_.contiguous();
+  int64_t max_id = chunk_ids_flat.max().item<int64_t>();
+  torch::Tensor counts = torch::bincount(
+      chunk_ids_flat, torch::Tensor(), max_id + 1);
+
+  // Gather counts for candidate chunks
+  torch::Tensor cand_counts = counts.index({candidate_chunks});  // [C]
+
+  // Build access time vector: sort by access time (missing = 0 = oldest)
+  auto chunks_cpu = candidate_chunks.cpu();
+  auto counts_cpu = cand_counts.cpu();
+  auto chunks_acc = chunks_cpu.accessor<int64_t, 1>();
+  auto counts_acc = counts_cpu.accessor<int64_t, 1>();
+
   struct ChunkInfo {
     int64_t id;
     float access_time;
     int64_t anchor_count;
   };
   std::vector<ChunkInfo> infos;
+  infos.reserve(num_candidates);
 
   for (int64_t i = 0; i < num_candidates; ++i) {
-    int64_t cid = accessor[i];
+    int64_t cid = chunks_acc[i];
     float at = 0.0f;
     auto it = chunk_access_times_.find(cid);
-    if (it != chunk_access_times_.end()) {
-      at = it->second;
-    }
-    int64_t count = (anchor_chunk_ids_ == cid).sum().item<int64_t>();
-    infos.push_back({cid, at, count});
+    if (it != chunk_access_times_.end()) at = it->second;
+    infos.push_back({cid, at, counts_acc[i]});
   }
 
-  // Sort by access time ascending (oldest = least recently used = evict first)
   std::sort(infos.begin(), infos.end(),
             [](const ChunkInfo& a, const ChunkInfo& b) {
               return a.access_time < b.access_time;
             });
 
-  // Accumulate until we have enough anchors to evict
   std::vector<int64_t> selected;
   int64_t accumulated = 0;
   for (const auto& info : infos) {
@@ -78,12 +90,9 @@ torch::Tensor GaussianModel::findLRUChunks(
     accumulated += info.anchor_count;
   }
 
-  // Convert to tensor
   auto opt = torch::TensorOptions().dtype(torch::kInt64).device(
       candidate_chunks.device());
-  if (selected.empty()) {
-    return torch::empty({0}, opt);
-  }
+  if (selected.empty()) return torch::empty({0}, opt);
   return torch::tensor(selected, opt);
 }
 
@@ -322,6 +331,56 @@ void GaussianModel::saveAndEvictChunks(const torch::Tensor& chunk_ids) {
         {valid_mask.size(0), n_offsets_}).reshape({-1});
     offset_gradient_accum_ = offset_gradient_accum_.index({expanded});
     offset_denom_ = offset_denom_.index({expanded});
+  }
+
+  // Prune optimizer state (Adam momentum) for evicted anchors
+  if (optimizer_) {
+    auto& param_groups = optimizer_->param_groups();
+    auto& state = optimizer_->state();
+
+    for (size_t g = 0; g < param_groups.size(); ++g) {
+      auto& params = param_groups[g].params();
+      if (params.empty()) continue;
+      auto key = params[0].unsafeGetTensorImpl();
+      auto it = state.find(key);
+      if (it == state.end()) continue;
+
+      auto& adam = static_cast<torch::optim::AdamParamState&>(*it->second);
+      if (adam.exp_avg().defined() && adam.exp_avg().size(0) > 0) {
+        // Determine whether exp_avg is [N] or [N*K] shaped
+        if (adam.exp_avg().size(0) == remove_mask.size(0)) {
+          adam.exp_avg(adam.exp_avg().index({valid_mask}));
+          adam.exp_avg_sq(adam.exp_avg_sq().index({valid_mask}));
+        } else if (adam.exp_avg().size(0) == remove_mask.size(0) * n_offsets_) {
+          torch::Tensor expanded = valid_mask.unsqueeze(1)
+              .expand({valid_mask.size(0), n_offsets_}).reshape({-1});
+          adam.exp_avg(adam.exp_avg().index({expanded}));
+          adam.exp_avg_sq(adam.exp_avg_sq().index({expanded}));
+        }
+      }
+    }
+
+    // Update Tensor_vec wrappers to match pruned tensors
+    Tensor_vec_anchor_ = {anchor_};
+    Tensor_vec_offset_ = {offset_};
+    Tensor_vec_anchor_feat_ = {anchor_feat_};
+    Tensor_vec_anchor_opacity_ = {anchor_opacity_};
+    Tensor_vec_anchor_scaling_ = {anchor_scaling_};
+    Tensor_vec_anchor_rotation_ = {anchor_rotation_};
+
+    // Re-register param group 0 tensor (key changed after index())
+    if (!param_groups.empty() && !param_groups[0].params().empty()) {
+      auto old_key0 = param_groups[0].params()[0].unsafeGetTensorImpl();
+      auto it0 = state.find(old_key0);
+      if (it0 != state.end()) {
+        auto adam_state = std::make_unique<torch::optim::AdamParamState>(
+            static_cast<torch::optim::AdamParamState&>(*it0->second));
+        state.erase(it0);
+        auto new_key = anchor_.unsafeGetTensorImpl();
+        state[new_key] = std::move(adam_state);
+        param_groups[0].params() = {anchor_};
+      }
+    }
   }
 
   // Update loaded tracking

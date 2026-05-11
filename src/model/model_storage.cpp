@@ -226,8 +226,13 @@ ChunkData GaussianModel::extractChunkData(const torch::Tensor& chunk_mask,
   data.exist_since = exist_since_iter_.index({chunk_mask}).detach().clone();
   data.anchor_chunk_ids = anchor_chunk_ids_.index({chunk_mask}).detach().clone();
   data.anchor_ids = anchor_ids_.index({chunk_mask}).detach().clone();
-  data.offset_gradient_accum = offset_gradient_accum_;
-  data.offset_denom = offset_denom_;
+  // Slice [N*K, 1] gradient tensors by expanded chunk mask
+  torch::Tensor offset_mask = chunk_mask.unsqueeze(1)
+      .expand({chunk_mask.size(0), n_offsets_}).reshape({-1});
+  data.offset_gradient_accum =
+      offset_gradient_accum_.index({offset_mask}).detach().clone();
+  data.offset_denom =
+      offset_denom_.index({offset_mask}).detach().clone();
   data.opacity_accum = opacity_accum_.index({chunk_mask}).detach().clone();
   data.anchor_denom = anchor_denom_.index({chunk_mask}).detach().clone();
   data.num_anchors = data.anchor.size(0);

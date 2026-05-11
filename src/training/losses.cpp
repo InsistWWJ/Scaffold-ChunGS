@@ -8,10 +8,9 @@
  *   - Optional depth loss
  */
 
-#include "scaffold_chunks/gaussian_renderer.h"
+#include "scaffold_chunks/training_loss.h"
 
 #include <torch/torch.h>
-#include <iostream>
 #include <mutex>
 
 namespace scaffold_chungs {
@@ -93,16 +92,8 @@ static torch::Tensor isotropicLoss(const torch::Tensor& scaling) {
 }
 
 // =============================================================================
-// Compute Training Losses (returns tensors for autograd)
+// Compute Training Losses
 // =============================================================================
-
-struct TrainingLoss {
-  torch::Tensor total;       // combined loss tensor (for backward())
-  float l1_color = 0;       // scalar values for logging
-  float ssim_value = 0;
-  float depth_l1 = 0;
-  float isotropic = 0;
-};
 
 TrainingLoss computeLosses(
     const torch::Tensor& rendered_color,

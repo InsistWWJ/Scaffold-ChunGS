@@ -205,34 +205,29 @@ void GaussianModel::addAnchors(const torch::Tensor& xyz,
 
   // ---- Filter: remove new anchors that are too close to existing ones ----
   if (anchor_.size(0) > 0) {
-    // Spatial grid check: quantize existing & new anchors, deduplicate by grid cell.
-    // Avoids O(N_new * N_existing) brute-force on embedded GPU.
-    float dedup_cell = voxel_size_ * 2.0f;  // 2× voxel = conservative duplicate radius
+    // GPU-accelerated spatial deduplication via hash grid.
+    // Quantize existing & new anchors to grid cells, then mask out collisions.
+    float dedup_cell = voxel_size_ * 2.0f;
     torch::Tensor existing_vox = torch::round(anchor_.detach() / dedup_cell);
     torch::Tensor new_vox = torch::round(new_positions / dedup_cell);
 
-    auto [exist_unique, _inv, _cnt] = torch::_unique2(existing_vox, false, true, false);
-    int64_t NU = exist_unique.size(0);
+    // Encode 3D voxel coord to a single int64 key for efficient set difference
+    int64_t grid_scale = static_cast<int64_t>(1e6);
+    auto encode = [grid_scale](const torch::Tensor& vox) -> torch::Tensor {
+      return vox.index({torch::indexing::Slice(), 0}).to(torch::kInt64) * grid_scale * grid_scale +
+             vox.index({torch::indexing::Slice(), 1}).to(torch::kInt64) * grid_scale +
+             vox.index({torch::indexing::Slice(), 2}).to(torch::kInt64);
+    };
 
-    // Build lookup: for each new voxel, check if any existing voxel matches
-    std::vector<int64_t> keep_indices;
-    for (int64_t i = 0; i < N_new; ++i) {
-      bool duplicate = false;
-      for (int64_t j = 0; j < NU; ++j) {
-        if ((new_vox[i] - exist_unique[j]).abs().sum().item<float>() < 0.5f) {
-          duplicate = true;
-          break;
-        }
-      }
-      if (!duplicate) {
-        keep_indices.push_back(i);
-      }
-    }
+    torch::Tensor exist_keys = encode(existing_vox);
+    torch::Tensor new_keys = encode(new_vox);
 
-    if (keep_indices.empty()) return;
+    // Mask: keep new keys not present in existing keys
+    torch::Tensor unique_exist = std::get<0>(torch::_unique2(exist_keys));
+    torch::Tensor keep_mask = ~torch::isin(new_keys, unique_exist);
 
-    torch::Tensor keep_mask = torch::tensor(keep_indices,
-        torch::TensorOptions().dtype(torch::kInt64).device(device));
+    if (!keep_mask.any().item<bool>()) return;
+
     new_positions = new_positions.index({keep_mask});
     new_colors = new_colors.index({keep_mask});
     N_new = new_positions.size(0);

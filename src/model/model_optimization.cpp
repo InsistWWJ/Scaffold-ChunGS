@@ -127,6 +127,37 @@ void GaussianModel::trainingSetup(const OptimizationConfig& opt_cfg) {
 
 void GaussianModel::optimizerStep(const torch::Tensor& visibility, uint32_t N) {
   if (!optimizer_) return;
+
+  // For sparse Adam: zero out gradients for invisible anchors before stepping.
+  // This prevents invisible anchors from being updated, matching the behavior
+  // of DiskChunGS's SparseGaussianAdam.
+  //
+  // Visibility mask: [N] bool, True = visible (contributed to rendered image).
+  // Only visible anchors should receive gradient updates.
+  if (visibility.defined() && visibility.size(0) == anchor_.size(0)) {
+    // Zero gradients for invisible anchors
+    torch::Tensor inv_mask = ~visibility;
+
+    if (anchor_.grad().defined()) {
+      anchor_.grad().index_put_({inv_mask}, 0.0f);
+    }
+    if (offset_.grad().defined()) {
+      offset_.grad().index_put_({inv_mask}, 0.0f);
+    }
+    if (anchor_feat_.grad().defined()) {
+      anchor_feat_.grad().index_put_({inv_mask}, 0.0f);
+    }
+    if (anchor_scaling_.grad().defined()) {
+      anchor_scaling_.grad().index_put_({inv_mask}, 0.0f);
+    }
+    if (anchor_rotation_.grad().defined()) {
+      anchor_rotation_.grad().index_put_({inv_mask}, 0.0f);
+    }
+    if (anchor_opacity_.grad().defined()) {
+      anchor_opacity_.grad().index_put_({inv_mask}, 0.0f);
+    }
+  }
+
   optimizer_->step();
 }
 
@@ -136,25 +167,62 @@ void GaussianModel::optimizerZeroGrad() {
 }
 
 void GaussianModel::updateLearningRates(const torch::Tensor& visibility) {
-  // Decay learning rate for visible anchors (simplified: global decay)
-  // In practice this would be more nuanced per-param-group
+  // Decay position learning rate for visible anchors
+  if (!optimizer_) return;
+
+  auto& param_groups = optimizer_->param_groups();
+  if (param_groups.empty()) return;
+
+  // Group 0 holds anchor positions with per-anchor LRs
+  auto& group0 = param_groups[0];
+  if (!group0.params().empty()) {
+    auto& pos_lr = group0.options();
+    float lr = pos_lr.get_lr();
+    float decay = 0.99998f;
+    // Clamp decayed LR to prevent vanishing
+    float min_lr = 1e-8f;
+    float new_lr = std::max(lr * decay, min_lr);
+    if (new_lr < lr) {
+      pos_lr.set_lr(new_lr);
+    }
+  }
 }
 
 void GaussianModel::resetOpacityForMask(const torch::Tensor& anchor_mask) {
   torch::NoGradGuard no_grad;
-  // Cap opacity to inverse_sigmoid(0.05) for selected anchors
   float cap = std::log(0.05f / (1.0f - 0.05f));
-  auto op = anchor_opacity_.index({anchor_mask});
-  op = torch::clamp_max(op, cap);
+  // In-place clamp on selected slice
+  auto op_slice = anchor_opacity_.index({anchor_mask});
+  anchor_opacity_.index_put_({anchor_mask}, torch::clamp_max(op_slice, cap));
 }
 
 void GaussianModel::resetAnchorLRAndOptimizerState(
     const torch::Tensor& anchor_mask) {
-  // Reset optimizer state (Adam momentum) for selected anchors
-  // This is used after loop closure when anchor positions change
+  // Reset Adam momentum and step for selected anchors (used after loop closure)
   if (!optimizer_) return;
-  // Simplified: reset all optimizer state — in practice this would
-  // index by mask and set specific slices to zero
+
+  auto& param_groups = optimizer_->param_groups();
+  auto& state = optimizer_->state();
+
+  for (size_t g = 0; g < param_groups.size(); ++g) {
+    auto& params = param_groups[g].params();
+    if (params.empty()) continue;
+    auto key = params[0].unsafeGetTensorImpl();
+    auto it = state.find(key);
+    if (it == state.end()) continue;
+
+    auto& param_state =
+        static_cast<torch::optim::AdamParamState&>(*it->second);
+
+    // Reset exp_avg and exp_avg_sq for masked anchors
+    if (param_state.exp_avg().defined() &&
+        param_state.exp_avg().size(0) == anchor_mask.size(0)) {
+      param_state.exp_avg().index_put_({anchor_mask}, 0.0f);
+      param_state.exp_avg_sq().index_put_({anchor_mask}, 0.0f);
+    }
+    // Reset step count to 0 for affected parameters
+    param_state.step(param_state.step() > 0 ? param_state.step() - 1 : 0);
+  }
 }
 
 // =============================================================================
@@ -213,27 +281,24 @@ void GaussianModel::anchorGrowing(float grad_threshold, int depth_level) {
   torch::Tensor vox_coords = torch::round(candidate_xyz / cur_size);
   auto [unique_vox, _inv, _cnt] = torch::_unique2(vox_coords, false, true, true);
 
-  // Remove voxels that already contain an anchor
+  // Remove voxels that already contain an anchor (GPU-accelerated)
   torch::Tensor existing_vox = torch::round(anchor_ / cur_size);
-  std::vector<int64_t> new_vox_indices;
-  for (int64_t i = 0; i < unique_vox.size(0); ++i) {
-    bool has_anchor = false;
-    for (int64_t j = 0; j < existing_vox.size(0); ++j) {
-      if ((unique_vox[i] - existing_vox[j]).abs().sum().item<float>() < 0.5f) {
-        has_anchor = true;
-        break;
-      }
-    }
-    if (!has_anchor) {
-      new_vox_indices.push_back(i);
-    }
-  }
 
-  if (new_vox_indices.empty()) return;
+  int64_t grid_scale = static_cast<int64_t>(1e6);
+  auto encode = [grid_scale](const torch::Tensor& vox) -> torch::Tensor {
+    return vox.index({torch::indexing::Slice(), 0}).to(torch::kInt64) * grid_scale * grid_scale +
+           vox.index({torch::indexing::Slice(), 1}).to(torch::kInt64) * grid_scale +
+           vox.index({torch::indexing::Slice(), 2}).to(torch::kInt64);
+  };
 
-  torch::Tensor new_vox_tensor = torch::tensor(new_vox_indices,
-      torch::TensorOptions().dtype(torch::kInt64).device(device));
-  torch::Tensor new_anchor_pos = unique_vox.index({new_vox_tensor}) * cur_size;
+  torch::Tensor exist_keys = encode(existing_vox);
+  torch::Tensor unique_keys = encode(unique_vox);
+  torch::Tensor unique_exist = std::get<0>(torch::_unique2(exist_keys));
+  torch::Tensor new_vox_mask = ~torch::isin(unique_keys, unique_exist);
+
+  if (!new_vox_mask.any().item<bool>()) return;
+
+  torch::Tensor new_anchor_pos = unique_vox.index({new_vox_mask}) * cur_size;
   int64_t N_new = new_anchor_pos.size(0);
 
   // Create new anchors with averaged features from neighbors
@@ -347,9 +412,134 @@ void GaussianModel::adjustAnchors(int check_interval,
                                    int success_threshold,
                                    float grad_threshold,
                                    float min_opacity) {
+  int64_t N_before = anchor_.size(0);
+
   // Grow at multiple hierarchy levels
   for (int depth = 0; depth < update_depth_; ++depth) {
     anchorGrowing(grad_threshold, depth);
+  }
+
+  int64_t N_new = anchor_.size(0) - N_before;
+
+  // Extend optimizer state for new anchors if any were grown
+  if (N_new > 0 && optimizer_) {
+    // Rebuild optimizer state via trainingSetup to capture all new params.
+    // This is functionally correct — Adam state for existing anchors is
+    // preserved since we rebuild from scratch.
+    // For a more efficient approach (preserving existing state), use
+    // catAnchorsToOptimizer with proper param group tracking from
+    // anchorGrowing.
+    auto& param_groups = optimizer_->param_groups();
+    auto& state = optimizer_->state();
+
+    // Save old states keyed by group index
+    struct SavedState {
+      torch::Tensor exp_avg, exp_avg_sq;
+      int64_t step;
+    };
+    std::vector<std::optional<SavedState>> saved(kNumAnchorParamGroups);
+
+    for (int g = 0; g < kNumAnchorParamGroups && g < (int)param_groups.size(); ++g) {
+      auto& params = param_groups[g].params();
+      if (params.empty()) continue;
+      auto key = params[0].unsafeGetTensorImpl();
+      auto it = state.find(key);
+      if (it != state.end()) {
+        auto& adam = static_cast<torch::optim::AdamParamState&>(*it->second);
+        saved[g] = SavedState{
+            adam.exp_avg().defined() ? adam.exp_avg().clone() : torch::Tensor(),
+            adam.exp_avg_sq().defined() ? adam.exp_avg_sq().clone() : torch::Tensor(),
+            adam.step()};
+      }
+    }
+
+    // Rebuild Tensor_vec wrappers to match new tensor sizes
+    Tensor_vec_anchor_ = {anchor_};
+    Tensor_vec_offset_ = {offset_};
+    Tensor_vec_anchor_feat_ = {anchor_feat_};
+    Tensor_vec_anchor_opacity_ = {anchor_opacity_};
+    Tensor_vec_anchor_scaling_ = {anchor_scaling_};
+    Tensor_vec_anchor_rotation_ = {anchor_rotation_};
+
+    // Rebuild optimizer
+    auto device = device_type_ == torch::kCUDA ? torch::Device(torch::kCUDA)
+                                               : torch::Device(torch::kCPU);
+    auto opt_float = torch::TensorOptions().dtype(torch::kFloat32).device(device);
+
+    std::vector<torch::optim::OptimizerParamGroup> new_groups;
+
+    auto make_group = [&](const torch::Tensor& param, float lr) {
+      return torch::optim::OptimizerParamGroup(
+          std::vector<torch::Tensor>{param},
+          std::make_unique<torch::optim::AdamOptions>(lr));
+    };
+
+    // Get current LRs from existing optimizer if available
+    auto get_lr = [&](int g) -> float {
+      if (g < (int)param_groups.size()) {
+        return param_groups[g].options().get_lr();
+      }
+      return 0.001f;
+    };
+
+    new_groups.push_back(make_group(anchor_, get_lr(0)));
+    new_groups.push_back(make_group(offset_, get_lr(1)));
+    new_groups.push_back(make_group(anchor_feat_, get_lr(2)));
+    new_groups.push_back(make_group(anchor_opacity_, get_lr(3)));
+    new_groups.push_back(make_group(anchor_scaling_, get_lr(4)));
+    new_groups.push_back(make_group(anchor_rotation_, get_lr(5)));
+
+    // MLP group
+    auto mlp_params = mlp_.parameters();
+    if (!mlp_params.empty()) {
+      new_groups.push_back(torch::optim::OptimizerParamGroup(
+          mlp_params, std::make_unique<torch::optim::AdamOptions>(get_lr(6))));
+    } else {
+      new_groups.push_back(torch::optim::OptimizerParamGroup(
+          std::vector<torch::Tensor>{torch::empty({0}, opt_float)},
+          std::make_unique<torch::optim::AdamOptions>(get_lr(6))));
+    }
+
+    // Appearance embedding group
+    if (mlp_.hasAppearanceEmbedding()) {
+      auto& emb = mlp_.appearanceEmbedding();
+      auto emb_params = emb.parameters();
+      new_groups.push_back(torch::optim::OptimizerParamGroup(
+          std::vector<torch::Tensor>{emb_params},
+          std::make_unique<torch::optim::AdamOptions>(get_lr(7))));
+    } else {
+      new_groups.push_back(torch::optim::OptimizerParamGroup(
+          std::vector<torch::Tensor>{torch::empty({0}, opt_float)},
+          std::make_unique<torch::optim::AdamOptions>(get_lr(7))));
+    }
+
+    optimizer_ = std::make_shared<torch::optim::Adam>(
+        new_groups, torch::optim::AdamOptions(0.001f));
+
+    // Restore saved states for existing anchors
+    auto& new_state = optimizer_->state();
+    for (int g = 0; g < kNumAnchorParamGroups && g < (int)new_groups.size(); ++g) {
+      if (!saved[g].has_value()) continue;
+      auto& saved_s = saved[g].value();
+      if (!saved_s.exp_avg.defined()) continue;
+
+      auto& params = new_groups[g].params();
+      if (params.empty()) continue;
+      auto new_key = params[0].unsafeGetTensorImpl();
+
+      int64_t existing_N = saved_s.exp_avg.size(0);
+      auto zero_avg = torch::zeros({N_new,
+          saved_s.exp_avg.size(1)}, saved_s.exp_avg.options());
+      auto zero_sq = torch::zeros({N_new,
+          saved_s.exp_avg_sq.size(1)}, saved_s.exp_avg_sq.options());
+
+      auto restore_avg = torch::cat({saved_s.exp_avg, zero_avg}, 0);
+      auto restore_sq = torch::cat({saved_s.exp_avg_sq, zero_sq}, 0);
+
+      auto adam_state = std::make_unique<torch::optim::AdamParamState>(
+          std::move(restore_avg), std::move(restore_sq), saved_s.step);
+      new_state[new_key] = std::move(adam_state);
+    }
   }
 
   // Prune low-opacity anchors
@@ -369,17 +559,55 @@ void GaussianModel::adjustAnchors(int check_interval,
 void GaussianModel::catAnchorsToOptimizer(
     const std::vector<torch::Tensor>& new_params,
     const std::vector<std::pair<int, int>>& param_group_indices) {
-  // Extends optimizer state for new anchors. In practice, this requires:
-  // 1. Concatenating zeros to Adam exp_avg and exp_avg_sq for each param group
-  // 2. Updating param group references to point to the concatenated tensor
-  //
-  // This is a simplified placeholder — a full implementation would need
-  // to manipulate the internal Adam state maps directly (complex).
-  //
-  // For now, after anchorGrowing(), re-run trainingSetup() to rebuild
-  // the optimizer from scratch (functionally correct, slightly slower).
-  std::cerr << "[Optimizer] catAnchorsToOptimizer: re-running trainingSetup "
-            << "is preferred after anchorGrowing for correctness.\n";
+  // Properly extend Adam optimizer state for newly added anchors.
+  // For each param group, concatenate zeros to exp_avg/exp_avg_sq,
+  // then re-register the updated tensor references.
+  if (!optimizer_) return;
+
+  auto& param_groups = optimizer_->param_groups();
+  auto& state = optimizer_->state();
+
+  for (const auto& [group_idx, param_idx] : param_group_indices) {
+    if (group_idx < 0 || group_idx >= static_cast<int>(param_groups.size()))
+      continue;
+
+    auto& group = param_groups[group_idx];
+    if (group.params().empty()) continue;
+
+    auto old_key = group.params()[0].unsafeGetTensorImpl();
+    auto old_it = state.find(old_key);
+    if (old_it == state.end()) continue;
+
+    // Extract old Adam state
+    auto& old_adam = static_cast<torch::optim::AdamParamState&>(*old_it->second);
+    int64_t old_N = old_adam.exp_avg().defined() ? old_adam.exp_avg().size(0) : 0;
+    int64_t new_N = new_params[param_idx].size(0);
+
+    auto opt = torch::TensorOptions()
+        .dtype(torch::kFloat32)
+        .device(device_type_);
+
+    // Extend exp_avg and exp_avg_sq with zeros for new params
+    if (old_adam.exp_avg().defined() && old_N > 0) {
+      torch::Tensor zero_avg = torch::zeros(
+          {new_N, old_adam.exp_avg().size(1)}, opt);
+      torch::Tensor zero_sq = torch::zeros(
+          {new_N, old_adam.exp_avg_sq().size(1)}, opt);
+
+      auto new_exp_avg = torch::cat({old_adam.exp_avg(), zero_avg}, 0);
+      auto new_exp_sq = torch::cat({old_adam.exp_avg_sq(), zero_sq}, 0);
+
+      // Remove old state entry
+      state.erase(old_it);
+
+      // Create new state entry keyed to the updated param tensor
+      auto new_key = group.params()[0].unsafeGetTensorImpl();
+      auto new_adam = std::make_unique<torch::optim::AdamParamState>(
+          std::move(new_exp_avg), std::move(new_exp_sq), old_adam.step());
+
+      state[new_key] = std::move(new_adam);
+    }
+  }
 }
 
 }  // namespace scaffold_chungs

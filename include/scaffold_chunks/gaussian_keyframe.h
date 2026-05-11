@@ -33,13 +33,13 @@ class GaussianKeyframe {
   Eigen::Matrix4f getPose() const;           // returns Tcw
   Eigen::Matrix3f getRotationMatrix() const;
   Eigen::Vector3f getTranslation() const;
-  torch::Tensor getCameraCenter() const;     // [3] tensor
+  torch::Tensor getCameraCenter(torch::DeviceType device = torch::kCPU) const;
 
   // ===========================================================================
   // Transform Tensors (computed from pose + intrinsics)
   // ===========================================================================
 
-  void computeTransformTensors();
+  void computeTransformTensors(torch::DeviceType device = torch::kCPU);
 
   torch::Tensor worldViewTransform() const { return world_view_transform_; }
   torch::Tensor projectionMatrix() const { return projection_matrix_; }

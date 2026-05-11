@@ -108,7 +108,7 @@ static std::shared_ptr<GaussianKeyframe> createKeyframe(
 
   float fx = 300.0f, fy = 300.0f, cx = width / 2.0f, cy = height / 2.0f;
   kf->setIntrinsics(fx, fy, cx, cy, width, height, 0.01f, 100.0f);
-  kf->computeTransformTensors();
+  kf->computeTransformTensors(torch::kCPU);
 
   // Create dummy GT image (black)
   cv::Mat dummy_img(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
@@ -201,8 +201,8 @@ int main(int argc, char** argv) {
   {
     auto kf = scene->getKeyframe(0);
     kf->transferToGPU(device);
-    kf->computeTransformTensors();
-    auto cc = kf->getCameraCenter().to(device);
+    kf->computeTransformTensors(device);
+    auto cc = kf->getCameraCenter(device);
 
     Eigen::Vector3f cc_eigen(cc[0].item<float>(),
                               cc[1].item<float>(),
@@ -270,8 +270,8 @@ int main(int argc, char** argv) {
       kf->transferToGPU(device);
       kf->computeTransformTensors();
       auto cc = kf->getCameraCenter().to(device);
-      auto w2v = kf->worldViewTransform().to(device);
-      auto proj = kf->projectionMatrix().to(device);
+      auto w2v = kf->worldViewTransform();
+      auto proj = kf->projectionMatrix();
 
       Eigen::Vector3f cc_eigen(cc[0].item<float>(),
                                 cc[1].item<float>(),
@@ -316,8 +316,8 @@ int main(int argc, char** argv) {
   {
     auto kf = scene->getKeyframe(10);
     kf->transferToGPU(device);
-    kf->computeTransformTensors();
-    auto cc = kf->getCameraCenter().to(device);
+    kf->computeTransformTensors(device);
+    auto cc = kf->getCameraCenter(device);
     auto w2v = kf->worldViewTransform().to(device);
     auto proj = kf->projectionMatrix().to(device);
 
