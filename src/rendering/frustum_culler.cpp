@@ -62,7 +62,9 @@ torch::Tensor FrustumCuller::buildFrustumPlanes(const Eigen::Matrix4f& wvp) {
 bool FrustumCuller::aabbIntersectsFrustum(
     const AABB& aabb, const torch::Tensor& frustum_planes) {
   // Conservative test: AABB is outside if it's completely on the negative
-  // side of any plane
+  // side of any plane. Requires frustum_planes to be on CPU.
+  TORCH_CHECK(!frustum_planes.is_cuda(),
+              "aabbIntersectsFrustum expects CPU-plane tensor (accessor-based)");
   auto pla = frustum_planes.accessor<float, 2>();
 
   for (int p = 0; p < 6; ++p) {
@@ -116,23 +118,11 @@ torch::Tensor FrustumCuller::cullAnchors(
     const Eigen::Matrix4f& world_view_proj,
     const std::vector<int64_t>& visible_chunk_ids) {
 
-  // First, get the chunk-level mask
   torch::Tensor chunk_mask = anchorMaskFromChunks(model, visible_chunk_ids);
-
-  // For anchors in visible chunks, do a per-anchor sphere test
   const auto& anchor = model.anchor();
-  const auto& scaling = model.anchorScaling();
   auto device = anchor.device();
-
-  // Compute approximate anchor sphere radius: max(|scaling[:,:3]|)
-  torch::Tensor radius = scaling.index({torch::indexing::Slice(),
-                                         torch::indexing::Slice(0, 3)})
-      .abs().max(1).values * model.getNumOffsets();  // [N]
-
-  // Check each anchor against frustum planes (in torch for GPU acceleration)
-  torch::Tensor planes = buildFrustumPlanes(world_view_proj).to(device);
-
   int64_t N = anchor.size(0);
+
   torch::Tensor visible_mask = torch::zeros({N},
       torch::TensorOptions().dtype(torch::kBool).device(device));
 
@@ -140,32 +130,34 @@ torch::Tensor FrustumCuller::cullAnchors(
     return visible_mask;
   }
 
-  // For anchors in visible chunks, test sphere against planes
-  torch::Tensor chunk_indices = torch::where(chunk_mask)[0];
+  // Indices of anchors belonging to visible chunks
+  torch::Tensor chunk_indices = torch::where(chunk_mask)[0];  // [K]
 
-  // Plane coefficients
-  auto pla = planes.accessor<float, 2>();
+  // Per-anchor sphere radius (approximated from max scale axis)
+  const auto& scaling = model.anchorScaling();
+  torch::Tensor radius = scaling.index({torch::indexing::Slice(),
+                                         torch::indexing::Slice(0, 3)})
+      .abs().max(1).values * model.getNumOffsets();  // [N]
 
-  for (int64_t idx = 0; idx < chunk_indices.size(0); ++idx) {
-    int64_t i = chunk_indices[idx].item<int64_t>();
-    float ax = anchor[i][0].item<float>();
-    float ay = anchor[i][1].item<float>();
-    float az = anchor[i][2].item<float>();
-    float r = radius[i].item<float>();
+  // Gather visible subset
+  torch::Tensor selected_xyz = anchor.index({chunk_indices});   // [K, 3]
+  torch::Tensor selected_r = radius.index({chunk_indices});      // [K]
 
-    bool inside = true;
-    for (int p = 0; p < 6; ++p) {
-      float a = pla[p][0], b = pla[p][1], c = pla[p][2], d = pla[p][3];
-      float dist = a * ax + b * ay + c * az + d;
-      if (dist < -r) {
-        inside = false;
-        break;
-      }
-    }
-    if (inside) {
-      visible_mask[i] = true;
-    }
-  }
+  // Build frustum planes, transfer coefficients to GPU
+  torch::Tensor planes = buildFrustumPlanes(world_view_proj).to(device);  // [6, 4]
+
+  // Batch sphere-vs-frustum test on GPU:
+  //   signed distance to plane = dot(xyz, normal) + offset
+  //   anchor is inside if distance >= -radius for all 6 planes
+  torch::Tensor norms = planes.index({torch::indexing::Slice(),
+                                      torch::indexing::Slice(0, 3)});    // [6, 3]
+  torch::Tensor offsets = planes.index({torch::indexing::Slice(), 3});   // [6]
+  torch::Tensor dists = torch::matmul(selected_xyz, norms.t()) + offsets.unsqueeze(0);  // [K, 6]
+
+  torch::Tensor inside = (dists >= -selected_r.unsqueeze(1)).all(1);  // [K] bool
+
+  // Scatter results back to the full-size mask
+  visible_mask.index_put_({chunk_indices}, inside);
 
   return visible_mask;
 }

@@ -10,9 +10,12 @@
 
 #include "scaffold_chunks/gaussian_model.h"
 
+#include <c10/cuda/CUDACachingAllocator.h>
+
 #include <algorithm>
 #include <future>
 #include <iostream>
+#include <thread>
 
 namespace scaffold_chungs {
 
@@ -154,27 +157,33 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_id_requests) {
     evictExcessChunks(chunks_needing_load, excess);
   }
 
-  // Parallel load from disk
+  // Parallel load from disk with concurrency cap for embedded (Jetson 6-core)
   auto chunks_cpu = chunks_needing_load.cpu();
   auto accessor = chunks_cpu.accessor<int64_t, 1>();
-  int num = chunks_cpu.size(0);
+  int num = static_cast<int>(chunks_cpu.size(0));
+  unsigned int max_threads = std::max(1U, std::thread::hardware_concurrency());
 
-  std::vector<std::future<std::pair<int64_t, std::optional<ChunkData>>>> futures;
-  for (int i = 0; i < num; ++i) {
-    int64_t cid = accessor[i];
-    futures.push_back(std::async(std::launch::async, [this, cid]() {
-      return std::make_pair(cid, loadSingleChunkFromDisk(cid));
-    }));
-  }
-
-  // Collect results
+  // Load in batches to bound thread count
   std::vector<ChunkData> to_append;
   std::vector<int64_t> loaded_ids;
-  for (auto& f : futures) {
-    auto [cid, data_opt] = f.get();
-    if (data_opt.has_value()) {
-      to_append.push_back(std::move(data_opt.value()));
-      loaded_ids.push_back(cid);
+
+  for (int batch_start = 0; batch_start < num; batch_start += static_cast<int>(max_threads)) {
+    int batch_end = std::min(num, batch_start + static_cast<int>(max_threads));
+
+    std::vector<std::future<std::pair<int64_t, std::optional<ChunkData>>>> futures;
+    for (int i = batch_start; i < batch_end; ++i) {
+      int64_t cid = accessor[i];
+      futures.push_back(std::async(std::launch::async, [this, cid]() {
+        return std::make_pair(cid, loadSingleChunkFromDisk(cid));
+      }));
+    }
+
+    for (auto& f : futures) {
+      auto [cid, data_opt] = f.get();
+      if (data_opt.has_value()) {
+        to_append.push_back(std::move(data_opt.value()));
+        loaded_ids.push_back(cid);
+      }
     }
   }
 
@@ -211,25 +220,32 @@ void GaussianModel::saveChunks(const torch::Tensor& chunk_ids_to_save) {
     prepared.emplace_back(cid, std::move(data));
   }
 
-  // Write in parallel (pure I/O)
-  std::vector<std::future<std::pair<int64_t, bool>>> futures;
-  for (auto& [cid, chunk_data] : prepared) {
-    futures.push_back(std::async(std::launch::async,
-        [this](int64_t id, ChunkData d) {
-          try {
-            saveSingleChunkToDisk(id, d);
-            return std::make_pair(id, true);
-          } catch (const std::exception& e) {
-            std::cerr << "[Save] Failed chunk " << id << ": " << e.what() << "\n";
-            return std::make_pair(id, false);
-          }
-        }, cid, std::move(chunk_data)));
-  }
-
+  // Write in parallel with concurrency cap
+  unsigned int max_threads = std::max(1U, std::thread::hardware_concurrency());
   std::vector<int64_t> succeeded;
-  for (auto& f : futures) {
-    auto [cid, ok] = f.get();
-    if (ok) succeeded.push_back(cid);
+
+  for (size_t batch_start = 0; batch_start < prepared.size();
+       batch_start += static_cast<size_t>(max_threads)) {
+    size_t batch_end = std::min(prepared.size(), batch_start + max_threads);
+
+    std::vector<std::future<std::pair<int64_t, bool>>> futures;
+    for (size_t i = batch_start; i < batch_end; ++i) {
+      futures.push_back(std::async(std::launch::async,
+          [this](int64_t id, ChunkData d) {
+            try {
+              saveSingleChunkToDisk(id, d);
+              return std::make_pair(id, true);
+            } catch (const std::exception& e) {
+              std::cerr << "[Save] Failed chunk " << id << ": " << e.what() << "\n";
+              return std::make_pair(id, false);
+            }
+          }, prepared[i].first, std::move(prepared[i].second)));
+    }
+
+    for (auto& f : futures) {
+      auto [cid, ok] = f.get();
+      if (ok) succeeded.push_back(cid);
+    }
   }
 
   // Update disk tracking metadata

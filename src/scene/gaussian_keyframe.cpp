@@ -100,21 +100,21 @@ void GaussianKeyframe::setTrainingImage(const cv::Mat& image) {
   cv::cvtColor(image, rgb, cv::COLOR_BGR2RGB);
   rgb.convertTo(rgb, CV_32FC3, 1.0 / 255.0);
 
-  std::vector<float> data((float*)rgb.data, (float*)rgb.data + rgb.total() * 3);
+  // Zero-copy: wrap cv::Mat data directly into a torch tensor
   auto opt = torch::TensorOptions().dtype(torch::kFloat32);
-  gt_image_ = torch::tensor(data, opt)
-      .reshape({image.rows, image.cols, 3})
+  gt_image_ = torch::from_blob(rgb.data,
+      {image.rows, image.cols, 3}, opt).clone()  // clone to own the memory
       .permute({2, 0, 1});  // [3, H, W]
 }
 
 void GaussianKeyframe::setDepthMap(const cv::Mat& depth) {
   cv::Mat depth_f32;
   depth.convertTo(depth_f32, CV_32FC1);
-  std::vector<float> data((float*)depth_f32.data,
-                          (float*)depth_f32.data + depth_f32.total());
+
   auto opt = torch::TensorOptions().dtype(torch::kFloat32);
-  gt_depth_ = torch::tensor(data, opt)
-      .reshape({1, depth.rows, depth.cols});  // [1, H, W]
+  gt_depth_ = torch::from_blob(depth_f32.data,
+      {1, depth.rows, depth.cols}, opt).clone()  // [1, H, W]
+      .reshape({1, depth.rows, depth.cols});
 }
 
 torch::Tensor GaussianKeyframe::getUndistortMask() const {

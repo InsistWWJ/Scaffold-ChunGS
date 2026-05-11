@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include <c10/cuda/CUDACachingAllocator.h>
 #include <torch/torch.h>
 
 #include <Eigen/Core>

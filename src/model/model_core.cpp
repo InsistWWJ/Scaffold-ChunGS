@@ -113,11 +113,13 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& xyz,
 
   auto device = device_type_ == torch::kCUDA ? torch::Device(torch::kCUDA)
                                              : torch::Device(torch::kCPU);
-  xyz.to(device);
-  colors.to(device);
+
+  // Transfer to target device (.to() returns a new tensor, does not modify in-place)
+  auto xyz_dev = xyz.to(device);
+  auto colors_dev = colors.to(device);
 
   // Voxelize input
-  auto [anchor_positions, anchor_colors] = voxelizePoints(xyz, colors, voxel_size_);
+  auto [anchor_positions, anchor_colors] = voxelizePoints(xyz_dev, colors_dev, voxel_size_);
   int64_t N = anchor_positions.size(0);
 
   if (N == 0) {
@@ -203,24 +205,32 @@ void GaussianModel::addAnchors(const torch::Tensor& xyz,
 
   // ---- Filter: remove new anchors that are too close to existing ones ----
   if (anchor_.size(0) > 0) {
-    // Simple radius check: if new anchor is within voxel_size of existing, skip
-    torch::Tensor existing = anchor_.detach();
-    int64_t N_existing = existing.size(0);
+    // Spatial grid check: quantize existing & new anchors, deduplicate by grid cell.
+    // Avoids O(N_new * N_existing) brute-force on embedded GPU.
+    float dedup_cell = voxel_size_ * 2.0f;  // 2× voxel = conservative duplicate radius
+    torch::Tensor existing_vox = torch::round(anchor_.detach() / dedup_cell);
+    torch::Tensor new_vox = torch::round(new_positions / dedup_cell);
 
-    // For each new anchor, check if it has a neighbor in existing anchors
-    // Use FAISS-style brute force: compute pairwise distances in chunks
+    auto [exist_unique, _inv, _cnt] = torch::_unique2(existing_vox, false, true, false);
+    int64_t NU = exist_unique.size(0);
+
+    // Build lookup: for each new voxel, check if any existing voxel matches
     std::vector<int64_t> keep_indices;
     for (int64_t i = 0; i < N_new; ++i) {
-      torch::Tensor diff = existing - new_positions[i].unsqueeze(0);  // [Ne, 3]
-      torch::Tensor dist2 = (diff * diff).sum(1);                      // [Ne]
-      if (dist2.min().item<float>() > voxel_size_ * voxel_size_) {
+      bool duplicate = false;
+      for (int64_t j = 0; j < NU; ++j) {
+        if ((new_vox[i] - exist_unique[j]).abs().sum().item<float>() < 0.5f) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (!duplicate) {
         keep_indices.push_back(i);
       }
     }
 
     if (keep_indices.empty()) return;
 
-    // Reselect kept anchors
     torch::Tensor keep_mask = torch::tensor(keep_indices,
         torch::TensorOptions().dtype(torch::kInt64).device(device));
     new_positions = new_positions.index({keep_mask});

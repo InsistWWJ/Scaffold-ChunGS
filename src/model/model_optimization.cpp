@@ -8,6 +8,7 @@
 
 #include "scaffold_chunks/gaussian_model.h"
 
+#include <cmath>
 #include <iostream>
 
 namespace scaffold_chungs {
@@ -204,8 +205,9 @@ void GaussianModel::anchorGrowing(float grad_threshold, int depth_level) {
   if (candidate_xyz.size(0) == 0) return;
 
   // Voxelize candidates at this depth level's resolution
-  int cur_size = voxel_size_ * update_init_factor_ /
-      static_cast<int>(std::pow(update_hierarchy_factor_, depth_level));
+  float cell_ratio = static_cast<float>(update_init_factor_) /
+      std::pow(static_cast<float>(update_hierarchy_factor_), depth_level);
+  int cur_size = static_cast<int>(std::round(voxel_size_ * cell_ratio));
   if (cur_size < 1) cur_size = 1;
 
   torch::Tensor vox_coords = torch::round(candidate_xyz / cur_size);
@@ -242,8 +244,9 @@ void GaussianModel::anchorGrowing(float grad_threshold, int depth_level) {
   torch::Tensor new_feat = torch::zeros({N_new, feat_dim_}, opt_float);
   float init_scale = std::log(std::sqrt(static_cast<float>(cur_size)));
   torch::Tensor new_scaling = torch::full({N_new, 6}, init_scale, opt_float);
-  torch::Tensor new_rotation = anchor_rotation_.index({torch::indexing::Slice(0, 1)})
-      .expand({N_new, 4}).clone();
+  torch::Tensor new_rotation = anchor_rotation_.size(0) > 0
+      ? anchor_rotation_.index({torch::indexing::Slice(0, 1)}).expand({N_new, 4}).clone()
+      : torch::tensor({{1.0f, 0.0f, 0.0f, 0.0f}}, opt_float).expand({N_new, 4}).clone();
   torch::Tensor new_opacity = torch::full({N_new, 1},
       std::log(0.1f / (1.0f - 0.1f)), opt_float);
 

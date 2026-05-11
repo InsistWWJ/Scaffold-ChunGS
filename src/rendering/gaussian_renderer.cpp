@@ -20,7 +20,21 @@ namespace scaffold_chungs {
 // that performs the projection math in pure LibTorch. For real deployment,
 // replace renderGaussiansCUDA with the actual CUDA rasterizer call.
 
-// Minimal tile-based rendering (placeholder for actual CUDA rasterizer)
+// =============================================================================
+// PLACEHOLDER RASTERIZER — NOT FOR PRODUCTION USE
+// =============================================================================
+//
+// This function uses CPU-side per-Gaussian loops with .item() calls that
+// force CUDA synchronization for EVERY Gaussian EVERY frame.
+//
+// On Jetson Orin (GA10B, 1024 cores), a single 1080p frame with 1.5M Gaussians
+// takes MINUTES to render, making real-time operation impossible.
+//
+// REPLACE THIS with INRIA's diff_gaussian_rasterization CUDA kernel before
+// any production deployment. The CUDA tile-based rasterizer delivers
+// real-time performance on embedded GPUs.
+// =============================================================================
+
 static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 renderGaussiansCUDA(
     const torch::Tensor& means3D,      // [M, 3]
@@ -34,44 +48,49 @@ renderGaussiansCUDA(
     int H, int W,
     const torch::Tensor& background) {
 
-  // Placeholder: render a simple background-colored image
-  // In production, this calls the actual CUDA rasterizer from INRIA 3DGS
   auto device = means3D.device();
   auto opt = torch::TensorOptions().dtype(torch::kFloat32).device(device);
 
-  torch::Tensor render = background.unsqueeze(1).unsqueeze(2)
-      .expand({3, H, W}).clone();
-  torch::Tensor depth = torch::full({1, H, W}, 100.0f, opt);
+  // Pre-allocate reusable buffers (will persist across calls via static)
+  // Note: H/W may vary between keyframes; re-alloc only when dimensions change
+  static torch::Tensor render, depth;
+  static int last_H = 0, last_W = 0;
+
+  if (H != last_H || W != last_W || !render.defined() ||
+      render.device() != device) {
+    render = background.unsqueeze(1).unsqueeze(2).expand({3, H, W}).clone();
+    depth = torch::full({1, H, W}, 100.0f, opt);
+    last_H = H; last_W = W;
+  } else {
+    render.copy_(background.unsqueeze(1).unsqueeze(2).expand({3, H, W}));
+    depth.fill_(100.0f);
+  }
+
   torch::Tensor radii = torch::zeros({means3D.size(0)}, opt);
 
   if (means3D.size(0) == 0) {
     return {render, depth, radii};
   }
 
-  // Simple point splatting (placeholder — real 3DGS uses tile-based sort)
   // Project 3D points to 2D
   torch::Tensor ones = torch::ones({means3D.size(0), 1}, opt);
   torch::Tensor pts4 = torch::cat({means3D, ones}, 1);  // [M, 4]
 
-  // World-to-clip: full_proj = proj_matrix @ world_view
   torch::Tensor full_proj = torch::matmul(proj_matrix, world_view);
   torch::Tensor clip = torch::matmul(full_proj, pts4.t()).t();  // [M, 4]
 
   // Perspective divide
-  torch::Tensor ndc_x = clip.index({torch::indexing::Slice(), 0}) /
-      clip.index({torch::indexing::Slice(), 3}).clamp_min(1e-6f);
-  torch::Tensor ndc_y = clip.index({torch::indexing::Slice(), 1}) /
-      clip.index({torch::indexing::Slice(), 3}).clamp_min(1e-6f);
-  torch::Tensor ndc_z = clip.index({torch::indexing::Slice(), 2}) /
-      clip.index({torch::indexing::Slice(), 3}).clamp_min(1e-6f);
+  torch::Tensor clip_w = clip.index({torch::indexing::Slice(), 3}).clamp_min(1e-6f);
+  torch::Tensor ndc_x = clip.index({torch::indexing::Slice(), 0}) / clip_w;
+  torch::Tensor ndc_y = clip.index({torch::indexing::Slice(), 1}) / clip_w;
+  torch::Tensor ndc_z = clip.index({torch::indexing::Slice(), 2}) / clip_w;
 
   // NDC -> pixel
   torch::Tensor px = (ndc_x * 0.5f + 0.5f) * W;
   torch::Tensor py = (ndc_y * 0.5f + 0.5f) * H;
 
   // Filter points in valid pixel range
-  torch::Tensor valid = (px >= 0) & (px < W) & (py >= 0) & (py < H) &
-                        (clip.index({torch::indexing::Slice(), 3}) > 0);
+  torch::Tensor valid = (px >= 0) & (px < W) & (py >= 0) & (py < H) & (clip_w > 0);
 
   if (!valid.any().item<bool>()) {
     return {render, depth, radii};
@@ -84,7 +103,9 @@ renderGaussiansCUDA(
   torch::Tensor valid_op = torch::sigmoid(opacity.index({valid}));
   torch::Tensor valid_depth = ndc_z.index({valid});
 
-  // Scatter (simplified: no alpha compositing, just max opacity)
+  // NOTE: This CPU loop with .item() calls is the bottleneck.
+  // Each .item() forces a full CUDA synchronization. For 1.5M Gaussians
+  // this is ~6M synchronizations per frame. Replace with CUDA kernel.
   for (int64_t i = 0; i < valid_px.size(0); ++i) {
     int x = valid_px[i].item<int>();
     int y = valid_py[i].item<int>();

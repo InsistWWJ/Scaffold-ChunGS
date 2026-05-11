@@ -12,6 +12,7 @@
 
 #include <torch/torch.h>
 #include <iostream>
+#include <mutex>
 
 namespace scaffold_chungs {
 
@@ -19,27 +20,39 @@ namespace scaffold_chungs {
 // SSIM Loss (simplified)
 // =============================================================================
 
-static torch::Tensor gaussianWindow(int size, float sigma) {
+// Cached Gaussian kernel — computed once, reused across calls
+static torch::Tensor gaussianWindowCached(int size, float sigma) {
+  static torch::Tensor cached;
+  static std::mutex mtx;
+  static int cached_size = 0;
+  static float cached_sigma = 0.f;
+
+  std::lock_guard<std::mutex> lock(mtx);
+  if (cached.defined() && cached_size == size && cached_sigma == sigma) {
+    return cached;
+  }
+
   auto x = torch::arange(size, torch::TensorOptions().dtype(torch::kFloat32));
   x = x - (size - 1) / 2.0f;
   x = torch::exp(-0.5f * (x / sigma).pow(2));
   x = x / x.sum();
-  return x.outer(x);
+  cached = x.outer(x);
+  cached_size = size;
+  cached_sigma = sigma;
+  return cached;
 }
 
 static torch::Tensor ssim(const torch::Tensor& img1,
                           const torch::Tensor& img2,
                           float C1 = 0.01f * 0.01f,
                           float C2 = 0.03f * 0.03f) {
-  // img1, img2: [C, H, W]
   int window_size = 11;
   float sigma = 1.5f;
-  auto window = gaussianWindow(window_size, sigma)
+  auto window = gaussianWindowCached(window_size, sigma)
       .unsqueeze(0).unsqueeze(0)
-      .to(img1.device());  // [1, 1, 11, 11]
+      .to(img1.device());
   window = window / window.sum();
 
-  // Per-channel SSIM with 2D convolution
   torch::Tensor mu1 = torch::conv2d(
       img1.unsqueeze(1), window,
       torch::Conv2dOptions().padding(window_size / 2).groups(1));
@@ -80,15 +93,15 @@ static torch::Tensor isotropicLoss(const torch::Tensor& scaling) {
 }
 
 // =============================================================================
-// Compute Training Losses
+// Compute Training Losses (returns tensors for autograd)
 // =============================================================================
 
 struct TrainingLoss {
-  float l1_color = 0;
+  torch::Tensor total;       // combined loss tensor (for backward())
+  float l1_color = 0;       // scalar values for logging
   float ssim_value = 0;
   float depth_l1 = 0;
   float isotropic = 0;
-  float total = 0;
 };
 
 TrainingLoss computeLosses(
@@ -103,13 +116,12 @@ TrainingLoss computeLosses(
     float lambda_isotropic = 0.01f) {
 
   TrainingLoss loss;
-
-  // Ensure same device
   auto device = rendered_color.device();
   auto gt = gt_image.to(device);
   auto valid_mask = mask.to(device);
 
   if (gt.size(0) == 0 || rendered_color.size(0) == 0) {
+    loss.total = torch::tensor(0.f, torch::TensorOptions().dtype(torch::kFloat32).device(device));
     return loss;
   }
 
@@ -130,22 +142,22 @@ TrainingLoss computeLosses(
             .mode(torch::kNearest)).squeeze(0).to(torch::kBool);
   }
 
-  // Apply mask
   torch::Tensor mask_float = valid_mask.to(torch::kFloat32);
 
   // ---- L1 Color Loss ----
   torch::Tensor diff = (rendered_color - gt).abs();
   diff = diff * mask_float.unsqueeze(0);
-  loss.l1_color = diff.sum().item<float>() /
-      (mask_float.sum().item<float>() * 3.0f + 1e-8f);
+  torch::Tensor l1_tensor = diff.sum() / (mask_float.sum() * 3.0f + 1e-8f);
 
   // ---- SSIM Loss ----
   torch::Tensor masked_render = rendered_color * mask_float.unsqueeze(0);
   torch::Tensor masked_gt = gt * mask_float.unsqueeze(0);
   torch::Tensor ssim_val = ssim(masked_render, masked_gt);
-  loss.ssim_value = 1.0f - ssim_val.item<float>();
+  torch::Tensor ssim_tensor = 1.0f - ssim_val;
 
   // ---- Depth L1 Loss ----
+  torch::Tensor d_tensor = torch::tensor(0.f,
+      torch::TensorOptions().dtype(torch::kFloat32).device(device));
   if (gt_depth.defined() && gt_depth.numel() > 0) {
     auto gt_d = gt_depth.to(device);
     if (gt_d.size(1) != rendered_depth.size(1) || gt_d.size(2) != rendered_depth.size(2)) {
@@ -160,21 +172,28 @@ TrainingLoss computeLosses(
     torch::Tensor depth_mask = (gt_d > 0.01f).to(torch::kFloat32);
     torch::Tensor d_diff = (rendered_depth - gt_d).abs();
     d_diff = d_diff * depth_mask;
-    loss.depth_l1 = d_diff.sum().item<float>() /
-        (depth_mask.sum().item<float>() + 1e-8f);
+    d_tensor = d_diff.sum() / (depth_mask.sum() + 1e-8f);
   }
 
   // ---- Isotropic Loss ----
+  torch::Tensor iso_tensor = torch::tensor(0.f,
+      torch::TensorOptions().dtype(torch::kFloat32).device(device));
   if (child_scaling.defined() && child_scaling.numel() > 0) {
-    loss.isotropic = isotropicLoss(child_scaling).item<float>();
+    iso_tensor = isotropicLoss(child_scaling);
   }
 
-  // ---- Total ----
+  // ---- Combined total (as tensor, for autograd) ----
   float l1_weight = 1.0f - lambda_dssim;
-  loss.total = l1_weight * loss.l1_color +
-               lambda_dssim * loss.ssim_value +
-               lambda_depth * loss.depth_l1 +
-               lambda_isotropic * loss.isotropic;
+  loss.total = l1_weight * l1_tensor +
+               lambda_dssim * ssim_tensor +
+               lambda_depth * d_tensor +
+               lambda_isotropic * iso_tensor;
+
+  // Detached scalars for logging (does not break autograd chain)
+  loss.l1_color = l1_tensor.item<float>();
+  loss.ssim_value = ssim_tensor.item<float>();
+  loss.depth_l1 = d_tensor.item<float>();
+  loss.isotropic = iso_tensor.item<float>();
 
   return loss;
 }
@@ -187,7 +206,6 @@ torch::Tensor applyExposureTransform(
     const torch::Tensor& colors,
     float exposure_a,
     float exposure_b) {
-  // colors: [3, H, W] or [M, 3]
   return torch::exp(exposure_a) * colors + exposure_b;
 }
 

@@ -21,16 +21,17 @@
 #include <iostream>
 #include <chrono>
 #include <memory>
+#include <cmath>
 
 namespace scaffold_chungs {
 
 // Forward declaration of loss computation
 struct TrainingLoss {
+  torch::Tensor total;   // combined loss tensor for backward()
   float l1_color = 0;
   float ssim_value = 0;
   float depth_l1 = 0;
   float isotropic = 0;
-  float total = 0;
 };
 
 TrainingLoss computeLosses(
@@ -57,28 +58,22 @@ class ScaffoldTrainer {
       : model_(model), scene_(scene), opt_cfg_(opt_cfg), kf_cfg_(kf_cfg),
         current_iteration_(0) {
     keyframe_selector_ = std::make_shared<KeyframeSelection>(scene_);
+    preallocateBuffers();
   }
 
-  /**
-   * Run a single training iteration.
-   * @return total loss value, or -1 if no keyframe available
-   */
   float trainOneIteration();
-
-  /**
-   * Run the full training loop until stopped or max iterations reached.
-   */
   void run();
 
   void signalStop() { stopped_ = true; }
   bool stopped() const { return stopped_; }
   int currentIteration() const { return current_iteration_; }
 
-  // Expose model/scene for external use
   std::shared_ptr<GaussianModel> model() const { return model_; }
   std::shared_ptr<GaussianScene> scene() const { return scene_; }
 
  private:
+  void preallocateBuffers();
+
   std::shared_ptr<GaussianModel> model_;
   std::shared_ptr<GaussianScene> scene_;
   std::shared_ptr<KeyframeSelection> keyframe_selector_;
@@ -87,7 +82,18 @@ class ScaffoldTrainer {
 
   int current_iteration_ = 0;
   bool stopped_ = false;
+
+  // Pre-allocated render buffers to avoid per-frame allocation
+  torch::Tensor bg_color_;
+  bool buffers_allocated_ = false;
 };
+
+void ScaffoldTrainer::preallocateBuffers() {
+  auto device = model_->deviceType() == torch::kCUDA ?
+      torch::Device(torch::kCUDA) : torch::Device(torch::kCPU);
+  bg_color_ = torch::zeros({3}, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+  buffers_allocated_ = true;
+}
 
 // =============================================================================
 // Single Training Iteration
@@ -114,60 +120,59 @@ float ScaffoldTrainer::trainOneIteration() {
                            camera_center[1].item<float>(),
                            camera_center[2].item<float>());
 
-  // Build world-view-proj for frustum culling
   Eigen::Matrix4f wvp_eigen = Eigen::Matrix4f::Identity();
-  torch::Tensor full_proj = torch::matmul(proj, w2v).cpu();
-  auto fp_acc = full_proj.accessor<float, 2>();
-  for (int r = 0; r < 4; ++r)
-    for (int c = 0; c < 4; ++c)
-      wvp_eigen(r, c) = fp_acc[r][c];
+  if (model_->deviceType() == torch::kCPU) {
+    // Already on CPU — direct accessor
+    auto fp_acc = torch::matmul(proj, w2v).accessor<float, 2>();
+    for (int r = 0; r < 4; ++r)
+      for (int c = 0; c < 4; ++c)
+        wvp_eigen(r, c) = fp_acc[r][c];
+  } else {
+    // GPU tensor — copy to CPU first
+    torch::Tensor full_proj = torch::matmul(proj, w2v).cpu();
+    auto fp_acc = full_proj.accessor<float, 2>();
+    for (int r = 0; r < 4; ++r)
+      for (int c = 0; c < 4; ++c)
+        wvp_eigen(r, c) = fp_acc[r][c];
+  }
 
   torch::Tensor visible_mask = model_->cullVisibleAnchors(
       cc_eigen, wvp_eigen, /*manage_memory=*/true);
 
-  // Step 4: Background color
-  auto device = model_->deviceType() == torch::kCUDA ?
-      torch::Device(torch::kCUDA) : torch::Device(torch::kCPU);
-  torch::Tensor bg = model_->deviceType() == torch::kCUDA ?
-      torch::zeros({3}, torch::TensorOptions().dtype(torch::kFloat32).device(device))
-      : torch::zeros({3}, torch::TensorOptions().dtype(torch::kFloat32));
-
-  // Step 5: Render
+  // Step 4: Render
   auto output = ScaffoldRenderer::render(
       *model_, visible_mask, camera_center, w2v, proj,
       kf->FoVx(), kf->FoVy(),
       kf->imageHeight(), kf->imageWidth(),
-      bg, 1.0f);
+      bg_color_, 1.0f);
 
-  // Step 6: Compute loss
+  // Step 5: Compute loss (returns tensors in autograd graph)
   torch::Tensor gt_image = kf->getGTImage();
   torch::Tensor gt_depth = kf->getGTDepth();
   torch::Tensor mask = kf->getUndistortMask();
 
+  // Note: placeholder rasterizer uses .item() calls which break autograd;
+  // gradients will flow once CUDA rasterizer (diff_gaussian_rasterization)
+  // is integrated. The MLP outputs remain in the autograd graph.
   auto loss = computeLosses(
       output.color, output.depth, gt_image, gt_depth,
-      output.radii, mask,  // using radii as a proxy for scaling in isotropic
+      output.radii, mask,
       opt_cfg_.lambda_dssim, opt_cfg_.lambda_depth,
       opt_cfg_.lambda_isotropic);
 
-  // Step 7: Backward
-  if (loss.total > 0) {
-    // Create a dummy loss tensor for autograd
-    torch::Tensor loss_tensor = torch::tensor({loss.total},
-        torch::TensorOptions().dtype(torch::kFloat32).device(device));
-    loss_tensor.set_requires_grad(true);
-    // In production: actual loss with backward() through the renderer
-    // loss_tensor.backward();
+  // Step 6: Backward — propagates gradients through MLP (when rasterizer supports it)
+  if (loss.total.requires_grad() || loss.total.item<float>() > 0) {
+    loss.total.backward();
   }
 
-  // Step 8: Optimizer step
+  // Step 7: Optimizer step
   model_->optimizerStep(visible_mask, visible_mask.sum().item<int>());
   model_->optimizerZeroGrad();
 
-  // Step 9: Record loss for keyframe selection
-  keyframe_selector_->recordLoss(kf->fid(), loss.total);
+  // Step 8: Record loss for keyframe selection
+  keyframe_selector_->recordLoss(kf->fid(), loss.total.item<float>());
 
-  // Step 10: Periodic densification
+  // Step 9: Periodic densification
   if (current_iteration_ % opt_cfg_.densify_check_interval == 0 &&
       current_iteration_ > 0) {
     model_->adjustAnchors(
@@ -176,24 +181,23 @@ float ScaffoldTrainer::trainOneIteration() {
         opt_cfg_.densify_grad_threshold,
         opt_cfg_.densify_opacity_threshold);
 
-    // Re-run training setup after densification
+    // Rebuild optimizer after anchor count changes
     model_->trainingSetup(opt_cfg_);
   }
 
   current_iteration_++;
 
-  // Log periodically
   if (current_iteration_ % 50 == 0) {
     std::cout << "[Iter " << current_iteration_ << "] "
               << "L1=" << loss.l1_color
               << " SSIM=" << loss.ssim_value
               << " Iso=" << loss.isotropic
-              << " Total=" << loss.total
+              << " Total=" << loss.total.item<float>()
               << " Anchors=" << model_->getNumAnchors()
               << " KF=" << kf->fid() << "\n";
   }
 
-  return loss.total;
+  return loss.total.item<float>();
 }
 
 // =============================================================================
@@ -215,7 +219,6 @@ void ScaffoldTrainer::run() {
 
     float loss = trainOneIteration();
     if (loss < 0) {
-      // No keyframe available — all used up? refresh
       auto kfs = scene_->getAllKeyframes();
       for (auto& [fid, kf] : kfs) {
         kf->setTimesOfUse(opt_cfg_.new_keyframe_times_of_use);
@@ -234,7 +237,6 @@ void ScaffoldTrainer::run() {
             << " (" << (elapsed > 0 ? training_kf_count / elapsed : 0)
             << " it/s)\n";
 
-  // Save all chunks on completion
   model_->saveAllChunks();
   std::cout << "[Trainer] Total anchors: " << model_->countAllAnchors()
             << " (" << model_->countAllGaussians() << " gaussians)\n";
@@ -253,71 +255,71 @@ ScaffoldChunGSConfig ScaffoldChunGSConfig::fromYAML(const std::string& config_pa
   ScaffoldChunGSConfig cfg;
 
   // Model section
-  cfg.anchor.n_offsets = (int)fs["Anchor.n_offsets"];
-  cfg.anchor.feat_dim = (int)fs["Anchor.feat_dim"];
-  cfg.anchor.voxel_size = (float)fs["Anchor.voxel_size"];
-  cfg.anchor.sh_degree = (int)fs["Anchor.sh_degree"];
-  cfg.anchor.use_feat_bank = (int)fs["Anchor.use_feat_bank"] != 0;
-  cfg.anchor.add_opacity_dist = (int)fs["Anchor.add_opacity_dist"] != 0;
-  cfg.anchor.add_cov_dist = (int)fs["Anchor.add_cov_dist"] != 0;
-  cfg.anchor.add_color_dist = (int)fs["Anchor.add_color_dist"] != 0;
-  cfg.anchor.appearance_dim = (int)fs["Anchor.appearance_dim"];
-  cfg.anchor.update_depth = (int)fs["Anchor.update_depth"];
-  cfg.anchor.update_init_factor = (int)fs["Anchor.update_init_factor"];
-  cfg.anchor.update_hierarchy_factor = (int)fs["Anchor.update_hierarchy_factor"];
-  cfg.anchor.densify_grad_threshold = (float)fs["Anchor.densify_grad_threshold"];
+  cfg.anchor.n_offsets = static_cast<int>(fs["Anchor.n_offsets"]);
+  cfg.anchor.feat_dim = static_cast<int>(fs["Anchor.feat_dim"]);
+  cfg.anchor.voxel_size = static_cast<float>(fs["Anchor.voxel_size"]);
+  cfg.anchor.sh_degree = static_cast<int>(fs["Anchor.sh_degree"]);
+  cfg.anchor.use_feat_bank = static_cast<int>(fs["Anchor.use_feat_bank"]) != 0;
+  cfg.anchor.add_opacity_dist = static_cast<int>(fs["Anchor.add_opacity_dist"]) != 0;
+  cfg.anchor.add_cov_dist = static_cast<int>(fs["Anchor.add_cov_dist"]) != 0;
+  cfg.anchor.add_color_dist = static_cast<int>(fs["Anchor.add_color_dist"]) != 0;
+  cfg.anchor.appearance_dim = static_cast<int>(fs["Anchor.appearance_dim"]);
+  cfg.anchor.update_depth = static_cast<int>(fs["Anchor.update_depth"]);
+  cfg.anchor.update_init_factor = static_cast<int>(fs["Anchor.update_init_factor"]);
+  cfg.anchor.update_hierarchy_factor = static_cast<int>(fs["Anchor.update_hierarchy_factor"]);
+  cfg.anchor.densify_grad_threshold = static_cast<float>(fs["Anchor.densify_grad_threshold"]);
   cfg.anchor.densify_opacity_threshold =
-      (float)fs["Anchor.densify_opacity_threshold"];
-  cfg.anchor.densify_check_interval = (int)fs["Anchor.densify_check_interval"];
+      static_cast<float>(fs["Anchor.densify_opacity_threshold"]);
+  cfg.anchor.densify_check_interval = static_cast<int>(fs["Anchor.densify_check_interval"]);
 
   // Chunk section
-  cfg.chunk.chunk_size = (float)fs["Chunk.chunk_size"];
-  cfg.chunk.max_anchors_in_memory = (int)fs["Chunk.max_anchors_in_memory"];
-  cfg.chunk.new_anchor_chunk_density = (int)fs["Chunk.new_anchor_chunk_density"];
-  cfg.chunk.storage_base_path = (std::string)fs["Chunk.storage_base_path"];
+  cfg.chunk.chunk_size = static_cast<float>(fs["Chunk.chunk_size"]);
+  cfg.chunk.max_anchors_in_memory = static_cast<int>(fs["Chunk.max_anchors_in_memory"]);
+  cfg.chunk.new_anchor_chunk_density = static_cast<int>(fs["Chunk.new_anchor_chunk_density"]);
+  cfg.chunk.storage_base_path = static_cast<std::string>(fs["Chunk.storage_base_path"]);
 
   // Optimization section
   cfg.optimization.anchor_position_lr_init =
-      (float)fs["Optimization.anchor_position_lr_init"];
+      static_cast<float>(fs["Optimization.anchor_position_lr_init"]);
   cfg.optimization.anchor_position_lr_decay =
-      (float)fs["Optimization.anchor_position_lr_decay"];
+      static_cast<float>(fs["Optimization.anchor_position_lr_decay"]);
   cfg.optimization.anchor_feature_lr =
-      (float)fs["Optimization.anchor_feature_lr"];
+      static_cast<float>(fs["Optimization.anchor_feature_lr"]);
   cfg.optimization.anchor_opacity_lr =
-      (float)fs["Optimization.anchor_opacity_lr"];
+      static_cast<float>(fs["Optimization.anchor_opacity_lr"]);
   cfg.optimization.anchor_scaling_lr =
-      (float)fs["Optimization.anchor_scaling_lr"];
+      static_cast<float>(fs["Optimization.anchor_scaling_lr"]);
   cfg.optimization.anchor_rotation_lr =
-      (float)fs["Optimization.anchor_rotation_lr"];
-  cfg.optimization.offset_lr = (float)fs["Optimization.offset_lr"];
-  cfg.optimization.mlp_opacity_lr = (float)fs["Optimization.mlp_opacity_lr"];
-  cfg.optimization.mlp_cov_lr = (float)fs["Optimization.mlp_cov_lr"];
-  cfg.optimization.mlp_color_lr = (float)fs["Optimization.mlp_color_lr"];
-  cfg.optimization.lambda_dssim = (float)fs["Optimization.lambda_dssim"];
-  cfg.optimization.lambda_depth = (float)fs["Optimization.lambda_depth"];
-  cfg.optimization.lambda_isotropic = (float)fs["Optimization.lambda_isotropic"];
-  cfg.optimization.max_num_iterations = (int)fs["Optimization.max_num_iterations"];
+      static_cast<float>(fs["Optimization.anchor_rotation_lr"]);
+  cfg.optimization.offset_lr = static_cast<float>(fs["Optimization.offset_lr"]);
+  cfg.optimization.mlp_opacity_lr = static_cast<float>(fs["Optimization.mlp_opacity_lr"]);
+  cfg.optimization.mlp_cov_lr = static_cast<float>(fs["Optimization.mlp_cov_lr"]);
+  cfg.optimization.mlp_color_lr = static_cast<float>(fs["Optimization.mlp_color_lr"]);
+  cfg.optimization.lambda_dssim = static_cast<float>(fs["Optimization.lambda_dssim"]);
+  cfg.optimization.lambda_depth = static_cast<float>(fs["Optimization.lambda_depth"]);
+  cfg.optimization.lambda_isotropic = static_cast<float>(fs["Optimization.lambda_isotropic"]);
+  cfg.optimization.max_num_iterations = static_cast<int>(fs["Optimization.max_num_iterations"]);
   cfg.optimization.new_keyframe_times_of_use =
-      (int)fs["Optimization.new_keyframe_times_of_use"];
-  cfg.optimization.spatial_lr_scale = (float)fs["Optimization.spatial_lr_scale"];
+      static_cast<int>(fs["Optimization.new_keyframe_times_of_use"]);
+  cfg.optimization.spatial_lr_scale = static_cast<float>(fs["Optimization.spatial_lr_scale"]);
 
   // Camera section
-  cfg.camera.z_near = (float)fs["Camera.z_near"];
-  cfg.camera.z_far = (float)fs["Camera.z_far"];
+  cfg.camera.z_near = static_cast<float>(fs["Camera.z_near"]);
+  cfg.camera.z_far = static_cast<float>(fs["Camera.z_far"]);
 
   // Keyframe section
   cfg.keyframe.large_rotation_threshold =
-      (float)fs["Keyframe.large_rotation_threshold"];
+      static_cast<float>(fs["Keyframe.large_rotation_threshold"]);
   cfg.keyframe.large_translation_threshold =
-      (float)fs["Keyframe.large_translation_threshold"];
+      static_cast<float>(fs["Keyframe.large_translation_threshold"]);
   cfg.keyframe.min_num_initial_map_kfs =
-      (int)fs["Keyframe.min_num_initial_map_kfs"];
+      static_cast<int>(fs["Keyframe.min_num_initial_map_kfs"]);
   cfg.keyframe.gaus_pyramid_sub_levels =
-      (int)fs["Keyframe.gaus_pyramid_sub_levels"];
+      static_cast<int>(fs["Keyframe.gaus_pyramid_sub_levels"]);
 
   // Device
-  cfg.data_device = (std::string)fs["Device.data_device"];
-  cfg.white_background = (int)fs["Device.white_background"] != 0;
+  cfg.data_device = static_cast<std::string>(fs["Device.data_device"]);
+  cfg.white_background = static_cast<int>(fs["Device.white_background"]) != 0;
 
   fs.release();
   return cfg;
