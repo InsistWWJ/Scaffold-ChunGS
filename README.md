@@ -120,8 +120,11 @@ Scaffold-ChunGS/
 │   └── training/
 │       ├── losses.cpp              # L1 + SSIM + isotropic + depth loss
 │       └── trainer.cpp             # Training loop + YAML config loader
-└── examples/
-    └── scaffold_chunks_demo.cpp    # End-to-end demo with synthetic scene
+├── scripts/                        # Utility scripts (data prep, eval)
+├── examples/
+│   └── scaffold_chunks_demo.cpp    # End-to-end demo with synthetic scene
+├── third_party/                    # External dependencies (build-time)
+└── thesis/                         # Related academic thesis (LaTeX)
 ```
 
 ---
@@ -181,7 +184,7 @@ make -j$(nproc) && make install
 ### 3. Clone & Build
 
 ```bash
-git clone --recursive git@github.com:your-org/Scaffold-ChunGS.git
+git clone --recursive git@github.com:InsistWWJ/Scaffold-ChunGS.git
 cd Scaffold-ChunGS
 
 # Auto-detect architecture
@@ -423,11 +426,12 @@ If you use Scaffold-ChunGS in your research, please cite both foundational works
   year={2026}, volume={11}, number={4}, pages={5009-5016},
   doi={10.1109/LRA.2026.3668704}}
 
-@ARTICLE{compact_gsslam2025,
-  author={Chen, Tiancheng and others},
+@ARTICLE{chen2025compactgsslam,
+  author={Chen, Tiancheng and Ding, Peng and Duan, Peihu and Zhang, Zhaoying
+          and Shi, Guodong and Cui, Chen and Ji, Xiaoxue and Zhu, Feng},
   journal={International Journal of Computer Vision},
-  title={Voxelized 3D Gaussian Representation for Dense Visual SLAM
-         on Embedded Vision System},
+  title={VCGS-R-SLAM: Voxelized 3D Gaussian Representation for Dense Visual
+         SLAM on Embedded Vision System},
   year={2025}}
 ```
 
