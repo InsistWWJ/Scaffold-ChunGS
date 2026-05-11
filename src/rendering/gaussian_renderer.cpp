@@ -1,6 +1,10 @@
 /**
  * Scaffold-ChunGS: Renderer that expands anchors to child Gaussians
- * via MLP decoders and feeds them to the CUDA 3DGS rasterizer.
+ * via MLP decoders and rasterizes via the 3DGS tile-based rasterizer.
+ *
+ * Two backends:
+ *   - HAVE_CUDA_RASTERIZER → INRIA diff_gaussian_rasterization (real-time)
+ *   - Fallback → pure-LibTorch GPU compositing (development/CPU-only)
  */
 
 #include "scaffold_chunks/gaussian_renderer.h"
@@ -11,15 +15,18 @@
 #include <cmath>
 #include <iostream>
 
+#ifdef HAVE_CUDA_RASTERIZER
+#include "diff_gaussian_rasterization/rasterize_points.h"
+#endif
+
 namespace scaffold_chungs {
 
 // =============================================================================
-// GPU Rasterizer — Pure LibTorch implementation (no per-element .item() calls)
+// Fallback Rasterizer — Pure LibTorch GPU (no external CUDA dependency)
 // =============================================================================
 //
-// This is a production-ready pure-LibTorch rasterizer suitable for development
-// and moderate-scale scenes. For real-time high-resolution deployment, replace
-// with INRIA's diff_gaussian_rasterization CUDA kernel.
+// Used when diff_gaussian_rasterization is not available.
+// All ops stay on GPU; the only sync point is .any().item<bool>() for early exit.
 //
 // Approach: depth-sorted alpha compositing on GPU via scatter_add and cumprod.
 // All operations stay on GPU; the only synchronization point is the final
@@ -205,11 +212,18 @@ RenderOutput ScaffoldRenderer::render(
     return output;
   }
 
-  // Step 4: GPU rasterizer (pure LibTorch, no .item() syncs)
+  // Step 4: Rasterize via CUDA kernel (if available) or pure-LibTorch fallback
+#ifdef HAVE_CUDA_RASTERIZER
+  auto [rendered_color, rendered_depth, radii] = RasterizeGaussians(
+      xyz, color, opacity, scaling, rotation,
+      world_view_transform, projection_matrix,
+      FoVx, FoVy, image_height, image_width, bg_color);
+#else
   auto [rendered_color, rendered_depth, radii] = renderGaussiansGPU(
       xyz, color, opacity, scaling, rotation,
       world_view_transform, projection_matrix,
       FoVx, FoVy, image_height, image_width, bg_color);
+#endif
 
   output.color = rendered_color;
   output.depth = rendered_depth;

@@ -1,5 +1,8 @@
 [submodule "third_party/diff_gaussian_rasterization"]
 	path = third_party/diff_gaussian_rasterization
 	url = https://github.com/graphdeco-inria/diff-gaussian-rasterization
-	branch = master
+	branch = main
 	ignore = dirty
+	# Pinned: 59f5f77 (2023-08-27) — latest stable, codebase is frozen since SIGGRAPH 2023.
+	# The CUDA source files (cuda_rasterizer/*.cu) are compiled directly in CMake,
+	# following the same pattern as DiskChunGS's cuda_rasterizer library.
