@@ -64,6 +64,13 @@ endif()
 find_package(glfw3 QUIET)
 find_package(OpenGL QUIET)
 
+if(glfw3_FOUND AND OPENGL_FOUND)
+  message(STATUS "GLFW + OpenGL found — viewer enabled")
+  add_definitions(-DHAVE_VIEWER)
+else()
+  message(STATUS "GLFW or OpenGL not found — viewer disabled")
+endif()
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_${CUDA_ARCH}")
 
@@ -100,7 +107,16 @@ set(SCAFFOLD_CHUNGS_SOURCES
     # Depth Estimation
     src/depth/depth_estimator.cpp
     # Mapper Pipeline
-    src/mapper/mapper_core.cpp)
+    src/mapper/mapper_core.cpp
+    # SLAM Pipeline
+    src/slam/tracking.cpp
+    src/slam/loop_closing.cpp
+    src/slam/builtin_adapter.cpp)
+
+# Conditionally add viewer sources
+if(glfw3_FOUND AND OPENGL_FOUND)
+  list(APPEND SCAFFOLD_CHUNGS_SOURCES src/viewer/gaussian_viewer.cpp)
+endif()
 
 add_library(scaffold_chungs SHARED ${SCAFFOLD_CHUNGS_SOURCES})
 
@@ -109,6 +125,12 @@ target_link_libraries(scaffold_chungs
     ${OpenCV_LIBS}
     Eigen3::Eigen
     OpenMP::OpenMP_CXX)
+
+if(glfw3_FOUND AND OPENGL_FOUND)
+  target_link_libraries(scaffold_chungs
+      glfw
+      ${OPENGL_LIBRARIES})
+endif()
 
 target_compile_features(scaffold_chungs PUBLIC cxx_std_17)
 

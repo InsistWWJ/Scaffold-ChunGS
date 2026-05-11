@@ -312,6 +312,153 @@ ScaffoldChunGSConfig ScaffoldChunGSConfig::fromYAML(const std::string& config_pa
     }
   }
 
+  // Tracking section
+  {
+    cv::FileNode node = fs["Tracking"];
+    if (!node.empty()) {
+      cfg.tracking.max_orb_features = static_cast<int>(node["max_orb_features"]);
+      cfg.tracking.scale_factor = static_cast<float>(node["scale_factor"]);
+      cfg.tracking.n_levels = static_cast<int>(node["n_levels"]);
+      cfg.tracking.fast_threshold = static_cast<int>(node["fast_threshold"]);
+      cfg.tracking.match_ratio_threshold = static_cast<float>(node["match_ratio_threshold"]);
+      cfg.tracking.min_pnp_inliers = static_cast<int>(node["min_pnp_inliers"]);
+      cfg.tracking.pnp_ransac_reproj_threshold =
+          static_cast<float>(node["pnp_ransac_reproj_threshold"]);
+      cfg.tracking.use_depth_for_pnp = static_cast<int>(node["use_depth_for_pnp"]) != 0;
+      cfg.tracking.min_depth = static_cast<float>(node["min_depth"]);
+      cfg.tracking.max_depth = static_cast<float>(node["max_depth"]);
+    }
+  }
+
+  // LoopClosing section
+  {
+    cv::FileNode node = fs["LoopClosing"];
+    if (!node.empty()) {
+      cfg.loop_closing.vocab_size = static_cast<int>(node["vocab_size"]);
+      cfg.loop_closing.vocab_tree_levels = static_cast<int>(node["vocab_tree_levels"]);
+      cfg.loop_closing.min_consecutive_loop = static_cast<int>(node["min_consecutive_loop"]);
+      cfg.loop_closing.loop_score_threshold = static_cast<float>(node["loop_score_threshold"]);
+      cfg.loop_closing.min_3d_matches = static_cast<int>(node["min_3d_matches"]);
+      cfg.loop_closing.max_loop_distance = static_cast<float>(node["max_loop_distance"]);
+      cfg.loop_closing.use_icp_refinement = static_cast<int>(node["use_icp_refinement"]) != 0;
+      cfg.loop_closing.max_optimization_iterations =
+          static_cast<int>(node["max_optimization_iterations"]);
+      cfg.loop_closing.optimization_convergence =
+          static_cast<float>(node["optimization_convergence"]);
+    }
+  }
+
+  // StereoSGBM section
+  {
+    cv::FileNode node = fs["StereoSGBM"];
+    if (!node.empty()) {
+      cfg.stereo_sgbm.min_disparity = static_cast<int>(node["min_disparity"]);
+      cfg.stereo_sgbm.num_disparities = static_cast<int>(node["num_disparities"]);
+      cfg.stereo_sgbm.block_size = static_cast<int>(node["block_size"]);
+      cfg.stereo_sgbm.p1 = static_cast<int>(node["p1"]);
+      cfg.stereo_sgbm.p2 = static_cast<int>(node["p2"]);
+      cfg.stereo_sgbm.disp12_max_diff = static_cast<int>(node["disp12_max_diff"]);
+      cfg.stereo_sgbm.pre_filter_cap = static_cast<int>(node["pre_filter_cap"]);
+      cfg.stereo_sgbm.uniqueness_ratio = static_cast<int>(node["uniqueness_ratio"]);
+      cfg.stereo_sgbm.speckle_window_size = static_cast<int>(node["speckle_window_size"]);
+      cfg.stereo_sgbm.speckle_range = static_cast<int>(node["speckle_range"]);
+      cfg.stereo_sgbm.use_wls_filter = static_cast<int>(node["use_wls_filter"]) != 0;
+    }
+  }
+
+  // Viewer section
+  {
+    cv::FileNode node = fs["Viewer"];
+    if (!node.empty()) {
+      cfg.viewer.window_width = static_cast<int>(node["window_width"]);
+      cfg.viewer.window_height = static_cast<int>(node["window_height"]);
+      cfg.viewer.window_title = static_cast<std::string>(node["window_title"]);
+      cfg.viewer.fullscreen = static_cast<int>(node["fullscreen"]) != 0;
+      cfg.viewer.vsync = static_cast<int>(node["vsync"]) != 0;
+      cfg.viewer.point_size = static_cast<float>(node["point_size"]);
+      cfg.viewer.frustum_scale = static_cast<float>(node["frustum_scale"]);
+      cfg.viewer.max_display_gaussians = static_cast<int>(node["max_display_gaussians"]);
+      cfg.viewer.show_cameras = static_cast<int>(node["show_cameras"]) != 0;
+      cfg.viewer.show_points = static_cast<int>(node["show_points"]) != 0;
+      cfg.viewer.show_grid = static_cast<int>(node["show_grid"]) != 0;
+      cfg.viewer.orbit_distance = static_cast<float>(node["orbit_distance"]);
+      cfg.viewer.orbit_azimuth = static_cast<float>(node["orbit_azimuth"]);
+      cfg.viewer.orbit_elevation = static_cast<float>(node["orbit_elevation"]);
+      cfg.viewer.orbit_sensitivity = static_cast<float>(node["orbit_sensitivity"]);
+      cfg.viewer.zoom_sensitivity = static_cast<float>(node["zoom_sensitivity"]);
+      cfg.viewer.bg_color_r = static_cast<float>(node["bg_color_r"]);
+      cfg.viewer.bg_color_g = static_cast<float>(node["bg_color_g"]);
+      cfg.viewer.bg_color_b = static_cast<float>(node["bg_color_b"]);
+      cfg.viewer.camera_color_r = static_cast<float>(node["camera_color_r"]);
+      cfg.viewer.camera_color_g = static_cast<float>(node["camera_color_g"]);
+      cfg.viewer.camera_color_b = static_cast<float>(node["camera_color_b"]);
+      cfg.viewer.trajectory_color_r = static_cast<float>(node["trajectory_color_r"]);
+      cfg.viewer.trajectory_color_g = static_cast<float>(node["trajectory_color_g"]);
+      cfg.viewer.trajectory_color_b = static_cast<float>(node["trajectory_color_b"]);
+    }
+  }
+
+  cfg.enable_viewer = static_cast<int>(fs["enable_viewer"]) != 0;
+
+  // Mapper section (DiskChunGS-aligned)
+  {
+    cv::FileNode node = fs["Mapper"];
+    if (!node.empty()) {
+      cfg.mapper.min_depth = static_cast<float>(node["min_depth"]);
+      cfg.mapper.max_depth = static_cast<float>(node["max_depth"]);
+      cfg.mapper.min_num_initial_map_kfs = static_cast<int>(node["min_num_initial_map_kfs"]);
+      cfg.mapper.new_keyframe_times_of_use =
+          static_cast<int>(node["new_keyframe_times_of_use"]);
+      cfg.mapper.local_BA_increased_times_of_use =
+          static_cast<int>(node["local_BA_increased_times_of_use"]);
+      cfg.mapper.loop_closure_increased_times_of_use =
+          static_cast<int>(node["loop_closure_increased_times_of_use"]);
+      cfg.mapper.stable_num_iter_existence =
+          static_cast<int>(node["stable_num_iter_existence"]);
+      cfg.mapper.loop_closure_optimization_iterations =
+          static_cast<int>(node["loop_closure_optimization_iterations"]);
+      cfg.mapper.loop_closure_memory_multiplier =
+          static_cast<float>(node["loop_closure_memory_multiplier"]);
+      cfg.mapper.auto_distribute_learning_rates =
+          static_cast<int>(node["auto_distribute_learning_rates"]) != 0;
+    }
+  }
+
+  // GausPyramid section
+  {
+    cv::FileNode node = fs["GausPyramid"];
+    if (!node.empty()) {
+      cfg.gaus_pyramid.num_sub_levels = static_cast<int>(node["num_sub_levels"]);
+      cv::FileNode factors_node = node["factors"];
+      if (!factors_node.empty()) {
+        cfg.gaus_pyramid.factors.clear();
+        for (const auto& v : factors_node) {
+          cfg.gaus_pyramid.factors.push_back(static_cast<float>(v));
+        }
+      }
+      cv::FileNode times_node = node["times_of_use"];
+      if (!times_node.empty()) {
+        cfg.gaus_pyramid.times_of_use.clear();
+        for (const auto& v : times_node) {
+          cfg.gaus_pyramid.times_of_use.push_back(static_cast<int>(v));
+        }
+      }
+    }
+  }
+
+  // Pipeline section
+  {
+    cv::FileNode node = fs["Pipeline"];
+    if (!node.empty()) {
+      cfg.pipeline.convert_SHs = static_cast<int>(node["convert_SHs"]) != 0;
+      cfg.pipeline.compute_cov3D = static_cast<int>(node["compute_cov3D"]) != 0;
+      cfg.pipeline.use_pose_optimization =
+          static_cast<int>(node["use_pose_optimization"]) != 0;
+      cfg.pipeline.use_exposure_optimization =
+          static_cast<int>(node["use_exposure_optimization"]) != 0;
+    }
+  }
+
   // Device
   cfg.data_device = static_cast<std::string>(fs["Device.data_device"]);
   cfg.white_background = static_cast<int>(fs["Device.white_background"]) != 0;

@@ -19,6 +19,12 @@ By combining these techniques in a unified C++/LibTorch framework, Scaffold-Chun
 
 ```
                    ┌──────────────────────────────┐
+ Mono / Stereo ──▶│      DepthEstimator           │
+                   │  MonoDepth (TensorRT) or      │
+                   │  StereoDepth (disparity→depth) │
+                   └──────────────┬───────────────┘
+                                  │ depth map
+                   ┌──────────────▼───────────────┐
  RGB-D / Stereo ──▶│   GaussianKeyframe (pose +   │
                    │   intrinsics + image pyramid) │
                    └──────────────┬───────────────┘
@@ -70,6 +76,13 @@ By combining these techniques in a unified C++/LibTorch framework, Scaffold-Chun
   │  │ (on disk)│  │ (on disk)│  │ (on disk)│          │
   │  └──────────┘  └──────────┘  └──────────┘          │
   └─────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────┐
+  │  ScaffoldMapper (SLAM Pipeline)                     │
+  │  Frame queue → KF decision → Gaussian seeding       │
+  │  → Local window BA (5 iters/window)                 │
+  │  → Loop closure (stub)                              │
+  └─────────────────────────────────────────────────────┘
 ```
 
 ### Key Design Decisions
@@ -102,24 +115,31 @@ Scaffold-ChunGS/
 │   ├── frustum_culler.h            # Two-level frustum culling
 │   ├── gaussian_keyframe.h         # Keyframe (pose + intrinsics)
 │   ├── gaussian_scene.h            # Keyframe container
-│   └── keyframe_selection.h        # Loss-weighted KF selection
+│   ├── keyframe_selection.h        # Loss-weighted KF selection
+│   ├── training_loss.h             # Shared TrainingLoss struct + computeLosses
+│   ├── depth_estimator.h           # MonoDepth + StereoDepth estimators
+│   └── gaussian_mapper.h           # Full SLAM mapper pipeline
 ├── src/
 │   ├── model/
-│   │   ├── model_core.cpp          # Anchor CRUD, voxelization
+│   │   ├── model_core.cpp          # Anchor CRUD, voxelization (GPU dedup)
 │   │   ├── model_mlp.cpp           # MLP forward/backward (core expansion)
 │   │   ├── model_storage.cpp       # Chunk binary I/O (magic: "SCHN")
-│   │   ├── model_memory.cpp        # LRU eviction, load/save chunks
+│   │   ├── model_memory.cpp        # LRU eviction, optimizer state pruning
 │   │   └── model_optimization.cpp  # Adam setup, anchor growing/pruning
 │   ├── rendering/
-│   │   ├── gaussian_renderer.cpp   # Anchor → GPU rasterizer
+│   │   ├── gaussian_renderer.cpp   # Two-backend (CUDA + LibTorch fallback)
 │   │   └── frustum_culler.cpp      # Plane extraction + AABB/sphere tests
 │   ├── scene/
 │   │   ├── gaussian_keyframe.cpp   # Pose, intrinsics, transform tensors
 │   │   ├── gaussian_scene.cpp      # Thread-safe KF map
 │   │   └── keyframe_selection.cpp  # Probabilistic KF sampling
-│   └── training/
-│       ├── losses.cpp              # L1 + SSIM + isotropic + depth loss
-│       └── trainer.cpp             # Training loop + YAML config loader
+│   ├── training/
+│   │   ├── losses.cpp              # L1 + SSIM + isotropic + depth loss
+│   │   └── trainer.cpp             # Training loop + YAML config loader
+│   ├── depth/
+│   │   └── depth_estimator.cpp     # MonoDepth (TensorRT) + StereoDepth
+│   └── mapper/
+│       └── mapper_core.cpp         # Frame queue, KF decision, seeding, BA
 ├── scripts/                        # Utility scripts (data prep, eval)
 ├── examples/
 │   └── scaffold_chunks_demo.cpp    # End-to-end demo with synthetic scene
@@ -138,6 +158,7 @@ Scaffold-ChunGS/
 | Eigen3 | ≥ 3.4 | Linear algebra (SE3, AABB) |
 | OpenCV | ≥ 4.5 | Image I/O, YAML config parsing |
 | OpenMP | — | CPU parallelization |
+| diff\_gaussian\_rasterization | *(optional)* pinned @ 59f5f77 | INRIA CUDA tile-based rasterizer (real-time rendering) |
 | GLFW + OpenGL | *(optional)* | Real-time viewer |
 
 ---
@@ -198,6 +219,9 @@ make -j$(nproc) && make install
 git clone --recursive git@github.com:InsistWWJ/Scaffold-ChunGS.git
 cd Scaffold-ChunGS
 
+# Initialize submodule (CUDA rasterizer — optional but recommended)
+git submodule update --init third_party/diff_gaussian_rasterization
+
 # Auto-detect architecture (x86_64 → sm_86, aarch64 → sm_87)
 mkdir build && cd build
 cmake ..
@@ -213,6 +237,10 @@ make -j$(nproc)
 - Torch is found via pip-installed PyTorch's CMake config
 - If the build can't find OpenCV, install it: `sudo apt install libopencv-dev`
 - For faster builds on the 6-core Orin Nano: `make -j4`
+
+**Rendering backends:**
+- **With `diff_gaussian_rasterization`**: CMake auto-detects the submodule at `third_party/diff_gaussian_rasterization` and defines `HAVE_CUDA_RASTERIZER`, enabling the INRIA tile-based CUDA rasterizer for production-quality rendering.
+- **Without (pure-LibTorch fallback)**: The system uses a GPU-based depth-sorted alpha compositing renderer built entirely on LibTorch ops — functionally complete for development and CPU-only environments, with no external CUDA dependency.
 
 ---
 
@@ -408,11 +436,10 @@ The anchor threshold (120K for Jetson 8GB, 300K for desktop 12GB+) produces up t
 
 ## Limitations & Future Work
 
-1. **No loop closure yet** — this is a core representation library; the pose-graph + loop detection pipeline from Compact_GSSLAM (NetVLAD + GICP + 3DGS registration) and DiskChunGS (ORB-SLAM3 BA) can be integrated on top.
+1. **No loop closure yet** — the pose-graph + loop detection pipeline from Compact_GSSLAM (NetVLAD + GICP + 3DGS registration) and DiskChunGS (ORB-SLAM3 BA) can be integrated on top.
 2. **No real-time viewer** — the OpenGL ImGui viewer from DiskChunGS can be ported.
-3. **CUDA rasterizer placeholder** — the `renderGaussiansCUDA()` function in `gaussian_renderer.cpp` uses simplified point splatting. Replace with INRIA's `diff_gaussian_rasterization` for production quality.
-4. **Optimizer rebuild after anchor growing** — `catAnchorsToOptimizer()` currently recommends re-running `trainingSetup()`. A proper optimizer-state extension (matching Compact_GSSLAM's behavior) is needed for efficiency.
-5. **No DepthLab integration** — the diffusion-based depth completion model is not yet wired in.
+3. **Depth estimators are placeholder** — `MonoDepthEstimator` and `StereoDepthEstimator` have stub implementations; TensorRT engine loading (DepthAnything) and real stereo matching (RAFT-Stereo) need to be wired in.
+4. **Mapper pipeline is scaffolding** — `ScaffoldMapper` provides the full SLAM pipeline skeleton (frame queue, keyframe decision, Gaussian seeding, local window BA, loop closure stub) but tracking and loop detection are not yet integrated with real SLAM frontends.
 
 ---
 

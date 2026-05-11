@@ -100,9 +100,28 @@ class MonoDepthEstimator : public DepthEstimator {
 // Stereo Depth Estimator (ORB-SLAM3 compatible)
 // =============================================================================
 
+// =============================================================================
+// SGBM Configuration
+// =============================================================================
+
+struct StereoSGBMConfig {
+  int min_disparity = 0;
+  int num_disparities = 128;      // Must be divisible by 16
+  int block_size = 9;             // SAD window size
+  int p1 = 8 * 3 * 9 * 9;        // P1 penalty (disparity change = 1)
+  int p2 = 32 * 3 * 9 * 9;       // P2 penalty (disparity change > 1)
+  int disp12_max_diff = 1;        // LR consistency check threshold
+  int pre_filter_cap = 63;
+  int uniqueness_ratio = 10;      // Margin for best vs second-best
+  int speckle_window_size = 100;  // Maximum speckle size to filter
+  int speckle_range = 32;         // Maximum disparity variation in speckle
+  bool use_wls_filter = false;    // Weighted least-squares post-filter
+};
+
 class StereoDepthEstimator : public DepthEstimator {
  public:
-  StereoDepthEstimator(float baseline, float fx);
+  StereoDepthEstimator(float baseline, float fx,
+                       const StereoSGBMConfig& sgbm_cfg = StereoSGBMConfig());
 
   DepthResult estimateDepth(const cv::Mat& image) override {
     (void)image;
@@ -114,6 +133,8 @@ class StereoDepthEstimator : public DepthEstimator {
  private:
   float baseline_;
   float fx_;
+  cv::Ptr<cv::StereoMatcher> sgbm_;
+  StereoSGBMConfig sgbm_cfg_;
 };
 
 // =============================================================================

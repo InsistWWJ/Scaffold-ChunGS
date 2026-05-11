@@ -43,7 +43,7 @@ $\downarrow$ \\
 
 \subsection{模块划分与技术栈}
 
-系统由四大核心模块组成：
+系统由六大核心模块组成：
 
 \begin{table}[htbp]
 \centering
@@ -55,8 +55,10 @@ $\downarrow$ \\
 \midrule
 锚点场景表示 & 体素化、MLP解码、生长/剪枝 & LibTorch, CUDA \\
 分块内存管理 & 空间分块、LRU淘汰、异步I/O & Eigen3, STL threading \\
-渲染子系统 & 视锥剔除、CUDA光栅化 & CUDA, Eigen3 \\
+渲染子系统 & 视锥剔除、双后端光栅化 & CUDA, Eigen3 \\
 训练子系统 & 损失计算、关键帧采样、调度 & LibTorch, OpenCV \\
+深度估计 & 单目TensorRT/双目立体深度 & TensorRT, OpenCV \\
+SLAM Mapper & 帧队列、KF决策、局部窗口BA & LibTorch, STL threading \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -277,9 +279,9 @@ LRU管理器实现于\verb|src/model/model_memory.cpp|。
 
 最终输出一个布尔掩码`[N]`，标记所有可见锚点，供后续MLP展开与光栅化使用。
 
-\subsection{CUDA可微光栅化}
+\subsection{双后端可微光栅化}
 
-光栅化器实现于\verb|src/rendering/gaussian_renderer.cpp|。
+光栅化器实现于\verb|src/rendering/gaussian_renderer.cpp|。系统采用双后端设计，通过编译期宏\verb|HAVE_CUDA_RASTERIZER|在两种渲染后端之间自动切换。
 
 \textbf{渲染管线（`ScaffoldRenderer::render`）：}
 
@@ -287,20 +289,33 @@ LRU管理器实现于\verb|src/model/model_memory.cpp|。
 1. sliced_anchors = model.getVisibleAnchors(visible_mask)  // 切片可见锚点
 2. expanded = model.mlp().expandAnchorsToGaussians(...)    // MLP展开
 3. active = expanded.child_mask                          // 滤除不透明度≤0的子高斯
-4. rgb, depth = renderGaussiansCUDA(                     // CUDA光栅化
+4. #ifdef HAVE_CUDA_RASTERIZER
+   rgb, depth = RasterizeGaussians(                      // INRIA CUDA光栅化
        xyz[active], color[active], opacity[active],
        scaling[active], rotation[active],
        w2v, proj, FoVx, FoVy, H, W, bg)
+   #else
+   rgb, depth = renderGaussiansGPU(                      // 纯LibTorch回退
+       xyz[active], color[active], opacity[active],
+       scaling[active], rotation[active],
+       w2v, proj, FoVx, FoVy, H, W, bg)
+   #endif
 \end{verbatim}
 
-\textbf{CUDA kernel（简化版）：}
+\textbf{后端一 —— INRIA CUDA光栅化器：}
+当CMake在\verb|third_party/diff_gaussian_rasterization|检测到子模块时，启用\verb|HAVE_CUDA_RASTERIZER|宏，链接INRIA开源的tile-based可微高斯光栅化器。该后端实现了完整的3DGS渲染管线——将3D高斯经视图-投影矩阵变换后，基于tile排序进行精确的$\alpha$混合，渲染质量与原始3DGS论文一致。该子模块锁定在commit \verb|59f5f77|（2023年8月，代码冻结），由CMake直接编译其CUDA源文件（\verb|cuda_rasterizer/*.cu|）。
+
+\textbf{后端二 —— 纯LibTorch GPU回退：}
+当CUDA光栅化器不可用时，系统使用完全构建于LibTorch张量算子的GPU渲染器。该回退方案的核心流程为：
+
 \begin{enumerate}
-    \item 将世界坐标系3D点经视图-投影矩阵变换至NDC空间。
-    \item 根据尺度与旋转构建2D协方差矩阵。
-    \item 以2D高斯核在像素邻域内进行$\alpha$混合。
+    \item \textbf{批量投影：}将所有3D点通过世界-视图-投影矩阵一次性变换至裁剪空间，再归一化至NDC空间与像素坐标。
+    \item \textbf{视口过滤：}以GPU布尔掩码向量化过滤超出图像边界、相机后方及深度范围外的点，零CPU同步（仅\verb|.any().item<bool>()|一次性判空）。
+    \item \textbf{屏幕半径估算：}使用$r \approx f \cdot \bar{s} / z_w$近似计算每个高斯的投影屏幕半径（$f$为焦距，$\bar{s}$为平均尺度）。
+    \item \textbf{深度排序与$\alpha$合成：}按像素平坦化索引排序高斯贡献后，使用\verb|torch::cumprod|计算透射率乘积，通过\verb|scatter_add|逐像素累加加权颜色，实现前至后的$\alpha$混合。
 \end{enumerate}
 
-\textbf{当前局限性：}本系统使用的CUDA光栅化器为简化版点泼溅实现，未实现INRIA原始3DGS的全tile排序与逐像素精确混合。对于毕业论文的验证性实验而言功能完整，但对于与SOTA的定量对比，建议替换为INRIA的\verb|diff_gaussian_rasterization|。
+该回退方案所有操作均在GPU上执行，唯一的同步点为渲染前的空帧判出，在功能上完整支持开发与验证场景。但与INRIA原始tile排序实现相比，在排序精度、混合准确度和渲染效率方面存在一定差距，因此生产部署建议启用CUDA光栅化器后端。
 
 \subsection{损失函数设计}
 
@@ -387,6 +402,40 @@ MLP权重（颜色） & 0.0025 & -- \\
 \end{tabular}
 \end{table}
 
+\subsection{深度估计模块}
+
+深度估计模块实现于\verb|src/depth/depth_estimator.cpp|（接口定义于\verb|include/scaffold_chunks/depth_estimator.h|），为系统提供统一的深度估计抽象层，支持两种深度源。
+
+\textbf{单目深度估计（MonoDepthEstimator）：}
+\begin{itemize}
+    \item 设计为加载TensorRT推理引擎（如DepthAnything模型），接受RGB图像并输出稠密深度图。
+    \item 通过\verb|initialize(engine_path)|加载TensorRT引擎并创建推理上下文。
+    \item 当前为存根实现，输出占位深度图；生产环境中需接入实际的TensorRT引擎加载与预处理/后处理管线。
+\end{itemize}
+
+\textbf{双目深度估计（StereoDepthEstimator）：}
+\begin{itemize}
+    \item 基于双目视觉原理：深度$d = b\cdot f_x / \delta$，其中$b$为基线长，$f_x$为焦距，$\delta$为视差值。
+    \item 接受左右目图像，通过立体匹配（如RAFT-Stereo或ORB-SLAM3的立体匹配器）计算视差图后转换为深度图。
+    \item 默认参数：基线0.12 m，焦距500像素；当前为存根实现，待接入真实立体匹配算法。
+\end{itemize}
+
+\textbf{工厂函数：}\verb|createDepthEstimator(DepthSource, model_path)|根据枚举类型自动构建对应的深度估计器实例，便于系统在单目与双目模式间切换。
+
+\subsection{SLAM Mapper管线}
+
+Mapper管线实现于\verb|src/mapper/mapper_core.cpp|（接口定义于\verb|include/scaffold_chunks/gaussian_mapper.h|），作为系统的顶层编排器，协调以下SLAM核心流程：
+
+\textbf{帧队列处理：}接收传感器数据流，维护一个固定容量的帧队列。每帧数据包含RGB图像、深度图（或深度估计结果）及可选位姿先验。
+
+\textbf{关键帧决策：}基于旋转/平移阈值或损失加权策略决定是否将当前帧提升为关键帧。新关键帧通过\verb|GaussianKeyframe|封装并加入\verb|GaussianScene|容器。每帧关键帧默认被选取用于训练8次（\verb|new_keyframe_times_of_use|）。
+
+\textbf{高斯种子生成：}对新关键帧覆盖的未建模区域，通过深度反投影生成3D点云，经体素化后通过\verb|GaussianModel::initializeFromPoints|或\verb|addAnchors|增量添加锚点。GPU批量去重确保新锚点不与既有锚点位置重叠。
+
+\textbf{局部窗口BA：}对最新$W$个关键帧（默认窗口大小5帧）执行局部窗口优化。每窗口运行固定次数的训练迭代，包含锚点生长与剪枝的定期触发。该设计在增量建图与计算效率之间取得平衡，避免全局优化随轨迹增长而性能退化。
+
+\textbf{回环检测存根：}预留了回环检测接口（基于NetVLAD全局描述子检索 + GICP几何校验的经典方案），当前为空实现，待后续集成。
+
 \section{关键工程实现细节}
 
 \subsection{YAML配置系统}
@@ -424,10 +473,12 @@ MLP权重（颜色） & 0.0025 & -- \\
 \verb|src/rendering/gaussian_renderer.cpp| & \S3.4.2 \\
 \verb|src/training/losses.cpp| & \S3.4.3 \\
 \verb|src/training/trainer.cpp| & \S3.4.4 \\
+\verb|src/depth/depth_estimator.cpp| & \S3.4.5 \\
+\verb|src/mapper/mapper_core.cpp| & \S3.4.6 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \section{本章小结}
 
-本章详细阐述了\ScaffoldChunGS 系统的设计与实现。系统以四大模块——锚点压缩表示、分块外存管理、渲染与训练——为核心，在C++17/CUDA/LibTorch技术栈上构建了完整的3D高斯SLAM管线。核心设计决策包括：锚点粒度块管理使压缩与扩展机制对齐、两级视锥剔除减少无效计算、LRU+5\%滞后策略平衡性能与稳定性、自包含\schun 格式支持训练持久化。第四章将通过实验验证系统的有效性。
+本章详细阐述了\ScaffoldChunGS 系统的设计与实现。系统以六大模块——锚点压缩表示、分块外存管理、双后端渲染、多目标训练、深度估计与SLAM Mapper管线——为核心，在C++17/CUDA/LibTorch技术栈上构建了完整的3D高斯SLAM管线。核心设计决策包括：锚点粒度块管理使压缩与扩展机制对齐、双后端渲染策略（INRIA CUDA光栅化器 + 纯LibTorch回退）兼顾性能与可移植性、两级视锥剔除减少无效计算、LRU+5\%滞后策略平衡性能与稳定性、自包含\schun 格式支持训练持久化。第四章将通过实验验证系统的有效性。

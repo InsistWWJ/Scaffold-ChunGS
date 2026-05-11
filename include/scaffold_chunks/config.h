@@ -4,6 +4,10 @@
 
 #pragma once
 
+#include "depth_estimator.h"
+#include "loop_closing.h"
+#include "tracking.h"
+
 #include <string>
 #include <vector>
 
@@ -104,15 +108,104 @@ struct KeyframeConfig {
 };
 
 // =============================================================================
+// Mapper Configuration (DiskChunGS-aligned)
+// =============================================================================
+
+struct MapperConfig {
+  float min_depth = 0.01f;
+  float max_depth = 100.0f;
+  int min_num_initial_map_kfs = 10;
+  int new_keyframe_times_of_use = 8;
+  int local_BA_increased_times_of_use = 4;
+  int loop_closure_increased_times_of_use = 8;
+  int stable_num_iter_existence = 1;
+  int loop_closure_optimization_iterations = 1000;
+  float loop_closure_memory_multiplier = 8.0f;
+  bool auto_distribute_learning_rates = true;
+};
+
+// =============================================================================
+// Gaussian Pyramid Configuration (DiskChunGS-aligned)
+// =============================================================================
+
+struct GausPyramidConfig {
+  int num_sub_levels = 1;
+  std::vector<float> factors = {1.0f, 0.5f, 0.25f};
+  std::vector<int> times_of_use = {8, 4, 2};
+};
+
+// =============================================================================
+// Pipeline Flags (DiskChunGS-aligned)
+// =============================================================================
+
+struct PipelineConfig {
+  bool convert_SHs = false;        // SH conversion (unused: MLP predicts colors)
+  bool compute_cov3D = true;       // Compute 3D covariance from scaling+rotation
+  bool use_pose_optimization = false;  // Joint pose + Gaussian optimization
+  bool use_exposure_optimization = false;
+};
+
+// =============================================================================
+// Viewer Configuration
+// =============================================================================
+
+struct ViewerConfig {
+  int window_width = 1920;
+  int window_height = 1080;
+  std::string window_title = "Scaffold-ChunGS Viewer";
+  bool fullscreen = false;
+  bool vsync = true;
+
+  // Rendering
+  float point_size = 3.0f;
+  float frustum_scale = 0.5f;
+  int max_display_gaussians = 500000;
+  bool show_cameras = true;
+  bool show_points = true;
+  bool show_grid = true;
+
+  // Camera
+  float orbit_distance = 5.0f;
+  float orbit_azimuth = 0.0f;
+  float orbit_elevation = 0.5f;
+  float orbit_sensitivity = 0.005f;
+  float zoom_sensitivity = 0.1f;
+
+  // Colors
+  float bg_color_r = 0.15f;
+  float bg_color_g = 0.15f;
+  float bg_color_b = 0.15f;
+  float camera_color_r = 0.0f;
+  float camera_color_g = 1.0f;
+  float camera_color_b = 0.0f;
+  float trajectory_color_r = 1.0f;
+  float trajectory_color_g = 0.5f;
+  float trajectory_color_b = 0.0f;
+};
+
+// =============================================================================
 // Master Configuration
 // =============================================================================
 
 struct ScaffoldChunGSConfig {
+  // Model and scene
   AnchorModelConfig anchor;
   ChunkConfig chunk;
+
+  // Pipeline (DiskChunGS-aligned sections)
   OptimizationConfig optimization;
   CameraConfig camera;
+  MapperConfig mapper;
   KeyframeConfig keyframe;
+  GausPyramidConfig gaus_pyramid;
+  PipelineConfig pipeline;
+
+  // Subsystem configs
+  TrackingConfig tracking;
+  LoopClosingConfig loop_closing;
+  StereoSGBMConfig stereo_sgbm;
+  ViewerConfig viewer;
+  bool enable_viewer = false;
 
   // Load from OpenCV FileStorage YAML
   static ScaffoldChunGSConfig fromYAML(const std::string& config_path);

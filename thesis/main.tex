@@ -276,7 +276,7 @@
 
 \textbf{（2）分块外存管理。}将场景按空间划分为固定大小的块（Chunk），设计LRU淘汰策略将非活跃块换出至磁盘，仅保留可见区域在GPU显存中。定义了自包含的\schun 二进制块格式，完整保存锚点参数与Adam优化器状态，支持训练的暂停与恢复。
 
-\textbf{（3）统一C++/LibTorch系统框架。}在C++17/CUDA环境下构建完整的SLAM系统，包含两级视锥剔除、多目标损失函数（L1+SSIM+深度+各向同性正则化）、层级化锚点生长与剪枝、以及基于损失加权的关键帧采样等模块。
+\textbf{（3）统一C++/LibTorch系统框架。}在C++17/CUDA环境下构建完整的SLAM系统，包含两级视锥剔除、多目标损失函数（L1+SSIM+深度+各向同性正则化）、层级化锚点生长与剪枝、基于损失加权的关键帧采样、多源深度估计（单目TensorRT/双目立体）以及SLAM Mapper管线（帧队列、关键帧决策、高斯种子、局部窗口BA）等模块。
 
 实验在合成球面场景上验证了系统的功能完整性，并分析了锚点压缩率、块I/O性能及各模块的消融效果。结果表明，\ScaffoldChunGS 在理论上可将单GPU显存可支撑的场景规模从约30M高斯扩展至无上限（受限于磁盘容量），同时保持与标准3DGS可比的渲染质量。
 
@@ -299,7 +299,7 @@ To address these issues, this thesis designs and implements \ScaffoldChunGS—a 
 
 \textbf{(2) Chunk-based out-of-core memory management.} The scene is spatially partitioned into fixed-size chunks. An LRU eviction policy swaps inactive chunks to disk, retaining only the visible region in GPU memory. A self-contained \schun binary chunk format stores all anchor parameters and Adam optimizer states, supporting training suspension and resumption.
 
-\textbf{(3) Unified C++/LibTorch system framework.} A complete SLAM system is built in a C++17/CUDA environment, featuring two-level frustum culling, multi-objective loss functions (L1+SSIM+depth+isotropic regularization), hierarchical anchor growing and pruning, and loss-weighted keyframe sampling.
+\textbf{(3) Unified C++/LibTorch system framework.} A complete SLAM system is built in a C++17/CUDA environment, featuring two-level frustum culling, multi-objective loss functions (L1+SSIM+depth+isotropic regularization), hierarchical anchor growing and pruning, loss-weighted keyframe sampling, multi-source depth estimation (monocular TensorRT / stereo), and a SLAM Mapper pipeline (frame queue, keyframe decision, Gaussian seeding, local window BA).
 
 Experiments on a synthetic sphere scene validate the system's functional completeness and analyze anchor compression ratio, chunk I/O performance, and ablation effects of each module. Results show that \ScaffoldChunGS can theoretically extend per-GPU-memory scene capacity from approximately 30M Gaussians to unlimited (bounded only by disk capacity), while maintaining rendering quality comparable to standard 3DGS.
 

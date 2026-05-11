@@ -19,6 +19,12 @@
 
 ```
                    ┌──────────────────────────────┐
+ 单目 / 双目 ──▶│      DepthEstimator           │
+                   │  单目深度 (TensorRT) 或       │
+                   │  双目深度 (视差→深度)          │
+                   └──────────────┬───────────────┘
+                                  │ 深度图
+                   ┌──────────────▼───────────────┐
  RGB-D / Stereo ──▶│   GaussianKeyframe (位姿 +    │
                    │   内参 + 图像金字塔)           │
                    └──────────────┬───────────────┘
@@ -70,6 +76,13 @@
   │  │ (磁盘中) │  │ (磁盘中) │  │ (磁盘中) │          │
   │  └──────────┘  └──────────┘  └──────────┘          │
   └─────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────┐
+  │  ScaffoldMapper (SLAM 管线)                         │
+  │  帧队列 → KF 决策 → 高斯种子                         │
+  │  → 局部窗口 BA (每窗口 5 次迭代)                     │
+  │  → 回环检测 (存根)                                   │
+  └─────────────────────────────────────────────────────┘
 ```
 
 ### 核心设计决策
@@ -103,24 +116,31 @@ Scaffold-ChunGS/
 │   ├── frustum_culler.h            # 两级视锥裁剪
 │   ├── gaussian_keyframe.h         # 关键帧 (位姿 + 内参)
 │   ├── gaussian_scene.h            # 关键帧容器
-│   └── keyframe_selection.h        # 基于损失的 KF 选取
+│   ├── keyframe_selection.h        # 基于损失的 KF 选取
+│   ├── training_loss.h             # 共享 TrainingLoss 结构体与 computeLosses
+│   ├── depth_estimator.h           # 单目深度 + 双目深度估计器
+│   └── gaussian_mapper.h           # 完整 SLAM Mapper 管线
 ├── src/
 │   ├── model/
-│   │   ├── model_core.cpp          # Anchor 增删查改、体素化
+│   │   ├── model_core.cpp          # Anchor 增删查改、体素化 (GPU 去重)
 │   │   ├── model_mlp.cpp           # MLP 前向/反向传播
 │   │   ├── model_storage.cpp       # Chunk 二进制 I/O (魔数: "SCHN")
-│   │   ├── model_memory.cpp        # LRU 淘汰、chunk 加载/保存
+│   │   ├── model_memory.cpp        # LRU 淘汰、优化器状态剪枝
 │   │   └── model_optimization.cpp  # Adam 设置、anchor 生长/剪枝
 │   ├── rendering/
-│   │   ├── gaussian_renderer.cpp   # Anchor → GPU 光栅化器
+│   │   ├── gaussian_renderer.cpp   # 双后端渲染 (CUDA + LibTorch 回退)
 │   │   └── frustum_culler.cpp      # 平面提取 + AABB/球体测试
 │   ├── scene/
 │   │   ├── gaussian_keyframe.cpp   # 位姿、内参、变换张量
 │   │   ├── gaussian_scene.cpp      # 线程安全 KF 映射
 │   │   └── keyframe_selection.cpp  # 概率化 KF 采样
-│   └── training/
-│       ├── losses.cpp              # L1 + SSIM + 各向同性 + 深度损失
-│       └── trainer.cpp             # 训练循环 + YAML 配置加载
+│   ├── training/
+│   │   ├── losses.cpp              # L1 + SSIM + 各向同性 + 深度损失
+│   │   └── trainer.cpp             # 训练循环 + YAML 配置加载
+│   ├── depth/
+│   │   └── depth_estimator.cpp     # 单目深度 (TensorRT) + 双目深度
+│   └── mapper/
+│       └── mapper_core.cpp         # 帧队列、KF 决策、高斯种子、局部 BA
 ├── scripts/                        # 辅助脚本 (数据准备、评估)
 ├── examples/
 │   └── scaffold_chunks_demo.cpp    # 端到端合成场景演示
@@ -139,6 +159,7 @@ Scaffold-ChunGS/
 | Eigen3 | ≥ 3.4 | 线性代数 (SE3、AABB) |
 | OpenCV | ≥ 4.5 | 图像 I/O、YAML 配置解析 |
 | OpenMP | — | CPU 并行化 |
+| diff\_gaussian\_rasterization | *(可选)* 锁定 @ 59f5f77 | INRIA CUDA tile 光栅化器（实时渲染） |
 | GLFW + OpenGL | *(可选)* | 实时可视化 |
 
 ---
@@ -199,6 +220,9 @@ make -j$(nproc) && make install
 git clone --recursive git@github.com:InsistWWJ/Scaffold-ChunGS.git
 cd Scaffold-ChunGS
 
+# 初始化子模块 (CUDA 光栅化器 — 可选但推荐)
+git submodule update --init third_party/diff_gaussian_rasterization
+
 # 自动检测架构（x86_64 → sm_86，aarch64 → sm_87）
 mkdir build && cd build
 cmake ..
@@ -214,6 +238,10 @@ make -j$(nproc)
 - Torch 通过 pip 安装的 PyTorch CMake 配置查找
 - 若找不到 OpenCV，请手动安装：`sudo apt install libopencv-dev`
 - Orin Nano 为 6 核 CPU，推荐 `make -j4` 以保留系统资源
+
+**渲染后端说明：**
+- **有 `diff_gaussian_rasterization` 时**：CMake 自动检测 `third_party/diff_gaussian_rasterization` 子模块并定义 `HAVE_CUDA_RASTERIZER`，启用 INRIA tile-based CUDA 光栅化器，获得生产级渲染质量。
+- **无时（纯 LibTorch 回退）**：系统使用完全基于 LibTorch 算子的 GPU 深度排序 alpha 合成渲染器——功能完整，适用于开发与 CPU 环境，零外部 CUDA 依赖。
 
 ---
 
@@ -409,11 +437,10 @@ Anchor 阈值（Jetson 8GB 为 120K，桌面 12GB+ 为 300K）可在内存中容
 
 ## 局限性与未来工作
 
-1. **尚无回环检测** — 目前是一个核心表征库；来自 Compact_GSSLAM（NetVLAD + GICP + 3DGS 配准）和 DiskChunGS（ORB-SLAM3 BA）的位姿图 + 回环检测管线可在上层集成。
+1. **尚无回环检测** — 来自 Compact_GSSLAM（NetVLAD + GICP + 3DGS 配准）和 DiskChunGS（ORB-SLAM3 BA）的位姿图 + 回环检测管线可在上层集成。
 2. **暂无实时可视化** — DiskChunGS 中的 OpenGL ImGui 可视化模块可移植。
-3. **CUDA 光栅化器为占位实现** — `gaussian_renderer.cpp` 中的 `renderGaussiansCUDA()` 函数使用简化的点喷射渲染。生产环境下请替换为 INRIA 的 `diff_gaussian_rasterization` 以获得更高质量。
-4. **Anchor 生长后需重建优化器** — `catAnchorsToOptimizer()` 目前建议重新运行 `trainingSetup()`。需要实现适当的优化器状态扩展（匹配 Compact_GSSLAM 的行为）以提高效率。
-5. **尚未集成 DepthLab** — 基于扩散的深度补全模型尚未接入。
+3. **深度估计器为存根实现** — `MonoDepthEstimator` 和 `StereoDepthEstimator` 目前为占位实现；需接入 TensorRT 引擎加载（DepthAnything）和真实立体匹配（RAFT-Stereo）。
+4. **Mapper 管线为框架代码** — `ScaffoldMapper` 提供了完整的 SLAM 管线骨架（帧队列、KF 决策、高斯种子、局部窗口 BA、回环检测存根），但跟踪与回环检测尚未与真实 SLAM 前端集成。
 
 ---
 
