@@ -14,8 +14,12 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
     message(STATUS "ARM architecture detected (Jetson)")
     set(CUDA_ARCH "87")
+
+    # JetPack 5.x / 6.x Torch paths (pip-installed PyTorch)
     find_package(Torch REQUIRED PATHS
         /usr/local/lib/python3.8/dist-packages/torch/share/cmake/Torch
+        /usr/local/lib/python3.10/dist-packages/torch/share/cmake/Torch
+        /usr/local/lib/python3.11/dist-packages/torch/share/cmake/Torch
         ${TORCH_CMAKE_PREFIX_PATH})
 else()
     message(STATUS "x86_64 architecture detected")
@@ -32,9 +36,14 @@ find_package(CUDA REQUIRED)
 
 find_package(Eigen3 REQUIRED)
 
-find_package(OpenCV REQUIRED
-    PATHS /workspace/third_party/install/opencv/
-    NO_DEFAULT_PATH)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+    # Jetson: use system OpenCV (pre-installed via JetPack SDK)
+    find_package(OpenCV REQUIRED)
+else()
+    find_package(OpenCV REQUIRED
+        PATHS /workspace/third_party/install/opencv/
+        NO_DEFAULT_PATH)
+endif()
 
 find_package(OpenMP REQUIRED)
 

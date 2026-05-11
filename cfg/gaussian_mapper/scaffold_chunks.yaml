@@ -37,7 +37,7 @@ Anchor.prune_success_threshold: 80
 # Chunk Memory Management
 # --------------------------------------------------------------------------
 Chunk.chunk_size: 20.0
-Chunk.max_anchors_in_memory: 300000
+Chunk.max_anchors_in_memory: 120000  # Jetson 8GB: reduced from 300000 (12GB)
 Chunk.new_anchor_chunk_density: 10
 Chunk.storage_base_path: "./chunks"
 

@@ -135,7 +135,7 @@ Scaffold-ChunGS/
 | 依赖库 | 版本要求 | 用途 |
 |-----------|---------|---------|
 | LibTorch (PyTorch C++) | ≥ 2.0 | 张量运算、Adam 优化器、`torch::nn` MLP |
-| CUDA Toolkit | ≥ 11.8 | GPU 光栅化器、自定义内核 |
+| CUDA Toolkit | ≥ 11.4 | GPU 光栅化器、自定义内核 |
 | Eigen3 | ≥ 3.4 | 线性代数 (SE3、AABB) |
 | OpenCV | ≥ 4.5 | 图像 I/O、YAML 配置解析 |
 | OpenMP | — | CPU 并行化 |
@@ -147,32 +147,43 @@ Scaffold-ChunGS/
 
 ### 前置条件
 
-- **操作系统**：Ubuntu 22.04 / 20.04（主力平台），Windows（仅构建）
-- **GPU**：NVIDIA GPU，CUDA 计算能力 ≥ 8.6（RTX 30xx+），或 8.7（Jetson AGX Orin）
-- **编译器**：GCC ≥ 9，NVCC ≥ 11.8
+- **操作系统**：Ubuntu 22.04 / 20.04（主力平台），Windows（仅构建），JetPack 5.1.3+（Jetson Orin）
+- **GPU**：NVIDIA GPU，CUDA 计算能力 ≥ 8.6（RTX 30xx+），或 8.7（Jetson Orin Nano / AGX Orin）
+- **编译器**：GCC ≥ 9，NVCC ≥ 11.4
 
 ### 1. 安装 LibTorch
 
-从 [pytorch.org](https://pytorch.org/get-started/locally/) 下载：
+**桌面端 (x86_64)：**
 
 ```bash
 wget https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.1.0%2Bcu118.zip
 unzip libtorch-cxx11-abi-shared-with-deps-2.1.0+cu118.zip -d /workspace/third_party/libtorch
 ```
 
-在 **Jetson** 平台上，PyTorch 通常通过 pip 安装；更新 `CMakeLists.txt` 以通过 Python 解析 Torch：
+**Jetson Orin (aarch64, JetPack 5.1.3+)：**
+
+Jetson 上的 PyTorch/LibTorch 必须通过 JetPack 提供的 pip wheel 安装（JP5 编译自 CUDA 11.4，JP6 编译自 CUDA 12.x）：
 
 ```bash
+# 通过 pip 安装 PyTorch（包含 LibTorch CMake 配置文件）
+pip3 install torch torchvision
+
+# 导出 CMake 前缀路径，使构建系统能找到 Torch
 export TORCH_CMAKE_PREFIX_PATH=$(python3 -c "import torch; print(torch.utils.cmake_prefix_path)")
 ```
+
+CMakeLists.txt 会自动检测 aarch64 并搜索常见的 JetPack Python 路径（3.8/3.10/3.11）。设置 `TORCH_CMAKE_PREFIX_PATH` 可覆盖所有默认路径。
 
 ### 2. 安装 OpenCV & Eigen3
 
 ```bash
-# Ubuntu
+# Ubuntu / Jetson（JetPack 预装 OpenCV 4.5+）
 sudo apt install libopencv-dev libeigen3-dev
+```
 
-# 或从源码编译 OpenCV 以启用 CUDA 支持
+仅在**桌面端 (x86_64)** 需要从源码编译带 CUDA 的 OpenCV：
+
+```bash
 cd /workspace/third_party
 git clone https://github.com/opencv/opencv.git
 cd opencv && mkdir build && cd build
@@ -188,14 +199,21 @@ make -j$(nproc) && make install
 git clone --recursive git@github.com:InsistWWJ/Scaffold-ChunGS.git
 cd Scaffold-ChunGS
 
-# 自动检测架构
+# 自动检测架构（x86_64 → sm_86，aarch64 → sm_87）
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
 
-# 可执行文件位于 build/bin/
-# 库文件位于 build/lib/
+# 可执行文件：build/bin/
+# 库文件：build/lib/
 ```
+
+**Jetson 注意事项：**
+- aarch64 上 CUDA 架构自动设为 `sm_87`
+- OpenCV 从系统路径解析（JetPack 预装路径）
+- Torch 通过 pip 安装的 PyTorch CMake 配置查找
+- 若找不到 OpenCV，请手动安装：`sudo apt install libopencv-dev`
+- Orin Nano 为 6 核 CPU，推荐 `make -j4` 以保留系统资源
 
 ---
 
@@ -213,7 +231,7 @@ Anchor.voxel_size: 0.01    # Anchor 放置分辨率
 
 # 内存管理
 Chunk.chunk_size: 20.0             # Chunk 大小（世界单位）
-Chunk.max_anchors_in_memory: 300000  # 淘汰阈值
+Chunk.max_anchors_in_memory: 120000  # 淘汰阈值（8GB Jetson；12GB+ dGPU 可用 300000）
 Chunk.storage_base_path: "./chunks"  # 磁盘存储路径
 
 # 训练
@@ -322,7 +340,7 @@ model->saveAllChunks();
 | 参数 | 类型 | 默认值 | 说明 |
 |-----|------|---------|-------------|
 | `Chunk.chunk_size` | float | 20.0 | 每个空间 chunk 的大小（世界单位）。 |
-| `Chunk.max_anchors_in_memory` | int | 300000 | 淘汰阈值（anchor 数量）。~300K anchor × K 偏移 ≈ 1.5M Gaussian。 |
+| `Chunk.max_anchors_in_memory` | int | 120000 | 淘汰阈值（anchor 数量）。默认 120K 适配 8GB Jetson；12GB+ dGPU 可增至 300K。 |
 | `Chunk.new_anchor_chunk_density` | int | 10 | 向 chunk 添加新点所需的最小 anchor 数。 |
 | `Chunk.storage_base_path` | string | "./chunks" | `.schun` 二进制文件的存储目录。 |
 
@@ -379,12 +397,13 @@ Offset  大小   字段
 | 指标 | 标准 3DGS | Scaffold-ChunGS |
 |--------|:---:|:---:|
 | 每 Gaussian 存储字节数 | ~240 | ~28（K=5 时） |
-| 8GB 显存下的场景规模 | ~30M Gaussian | ~300K anchor → ~1.5M 活跃 Gaussian |
+| 8GB 显存场景规模 (Jetson) | ~30M Gaussian | ~120K anchor → ~600K 活跃 Gaussian |
+| 12GB 显存场景规模 (dGPU) | ~30M Gaussian | ~300K anchor → ~1.5M 活跃 Gaussian |
 | 最大场景范围 | 受限于 GPU 显存 | 无限制（磁盘可扩展） |
 | 渲染质量 (PSNR) | 基准线 | 相当（+ 各向同性正则化） |
 | 训练速度 | 基准线 | +10–20%（每次迭代的 MLP 开销） |
 
-300K anchor 阈值可在内存中容纳最多 1.5M 活跃子 Gaussian，而任意数量的非活跃 chunk 驻留在磁盘上，从而实现几乎无界的场景重建。
+Anchor 阈值（Jetson 8GB 为 120K，桌面 12GB+ 为 300K）可在内存中容纳最多 5 倍于该数量的活跃子 Gaussian，而任意数量的非活跃 chunk 驻留在磁盘上，从而实现几乎无界的场景重建。
 
 ---
 

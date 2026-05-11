@@ -134,7 +134,7 @@ Scaffold-ChunGS/
 | Dependency | Version | Purpose |
 |-----------|---------|---------|
 | LibTorch (PyTorch C++) | ≥ 2.0 | Tensor ops, Adam optimizer, `torch::nn` MLPs |
-| CUDA Toolkit | ≥ 11.8 | GPU rasterizer, custom kernels |
+| CUDA Toolkit | ≥ 11.4 | GPU rasterizer, custom kernels |
 | Eigen3 | ≥ 3.4 | Linear algebra (SE3, AABB) |
 | OpenCV | ≥ 4.5 | Image I/O, YAML config parsing |
 | OpenMP | — | CPU parallelization |
@@ -146,32 +146,43 @@ Scaffold-ChunGS/
 
 ### Prerequisites
 
-- **OS**: Ubuntu 22.04 / 20.04 (primary), Windows (build-only)
-- **GPU**: NVIDIA GPU with CUDA compute capability ≥ 8.6 (RTX 30xx+), or 8.7 (Jetson AGX Orin)
-- **Compiler**: GCC ≥ 9, NVCC ≥ 11.8
+- **OS**: Ubuntu 22.04 / 20.04 (primary), Windows (build-only), JetPack 5.1.3+ (Jetson Orin)
+- **GPU**: NVIDIA GPU with CUDA compute capability ≥ 8.6 (RTX 30xx+), or 8.7 (Jetson Orin Nano / AGX Orin)
+- **Compiler**: GCC ≥ 9, NVCC ≥ 11.4
 
 ### 1. Install LibTorch
 
-Download from [pytorch.org](https://pytorch.org/get-started/locally/):
+**Desktop (x86_64):**
 
 ```bash
 wget https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.1.0%2Bcu118.zip
 unzip libtorch-cxx11-abi-shared-with-deps-2.1.0+cu118.zip -d /workspace/third_party/libtorch
 ```
 
-On **Jetson**, PyTorch is typically installed via pip; update `CMakeLists.txt` to resolve Torch via Python:
+**Jetson Orin (aarch64, JetPack 5.1.3+):**
+
+PyTorch/LibTorch on Jetson must be installed via the JetPack-provided pip wheel (compiled for CUDA 11.4 on JP5, CUDA 12.x on JP6):
 
 ```bash
+# Install PyTorch via pip (includes LibTorch CMake configs)
+pip3 install torch torchvision
+
+# Export CMake prefix so the build system finds Torch
 export TORCH_CMAKE_PREFIX_PATH=$(python3 -c "import torch; print(torch.utils.cmake_prefix_path)")
 ```
+
+The CMakeLists.txt auto-detects aarch64 and searches common JetPack Python paths (3.8/3.10/3.11). Setting `TORCH_CMAKE_PREFIX_PATH` overrides all defaults.
 
 ### 2. Install OpenCV & Eigen3
 
 ```bash
-# Ubuntu
+# Ubuntu / Jetson (JetPack pre-installs OpenCV 4.5+)
 sudo apt install libopencv-dev libeigen3-dev
+```
 
-# Or build OpenCV from source for CUDA support
+On **desktop (x86_64)** only, to build OpenCV from source with CUDA:
+
+```bash
 cd /workspace/third_party
 git clone https://github.com/opencv/opencv.git
 cd opencv && mkdir build && cd build
@@ -187,14 +198,21 @@ make -j$(nproc) && make install
 git clone --recursive git@github.com:InsistWWJ/Scaffold-ChunGS.git
 cd Scaffold-ChunGS
 
-# Auto-detect architecture
+# Auto-detect architecture (x86_64 → sm_86, aarch64 → sm_87)
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
 
-# Binaries are at build/bin/
-# Libraries are at build/lib/
+# Binaries: build/bin/
+# Libraries: build/lib/
 ```
+
+**Jetson notes:**
+- CUDA arch is auto-set to `sm_87` on aarch64
+- OpenCV is resolved from the system (JetPack pre-installed path)
+- Torch is found via pip-installed PyTorch's CMake config
+- If the build can't find OpenCV, install it: `sudo apt install libopencv-dev`
+- For faster builds on the 6-core Orin Nano: `make -j4`
 
 ---
 
@@ -212,7 +230,7 @@ Anchor.voxel_size: 0.01    # Anchor placement resolution
 
 # Memory management
 Chunk.chunk_size: 20.0             # Chunk size (world units)
-Chunk.max_anchors_in_memory: 300000  # Eviction threshold
+Chunk.max_anchors_in_memory: 120000  # Eviction threshold (8GB Jetson; use 300000 for 12GB+ dGPU)
 Chunk.storage_base_path: "./chunks"  # Disk storage location
 
 # Training
@@ -321,7 +339,7 @@ model->saveAllChunks();
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `Chunk.chunk_size` | float | 20.0 | Size of each spatial chunk (world units). |
-| `Chunk.max_anchors_in_memory` | int | 300000 | Eviction threshold (number of anchors). ~300K anchors × K offsets ≈ 1.5M Gaussians. |
+| `Chunk.max_anchors_in_memory` | int | 120000 | Eviction threshold (number of anchors). Default 120K for 8GB Jetson; increase to 300K for 12GB+ dGPU. |
 | `Chunk.new_anchor_chunk_density` | int | 10 | Minimum anchors per chunk for adding new points. |
 | `Chunk.storage_base_path` | string | "./chunks" | Directory for `.schun` binary files. |
 
@@ -378,12 +396,13 @@ Estimated figures (pending real-world validation):
 | Metric | Standard 3DGS | Scaffold-ChunGS |
 |--------|:---:|:---:|
 | Bytes per Gaussian (storage) | ~240 | ~28 (for K=5) |
-| Scene size @ 8GB VRAM | ~30M Gaussians | ~300K anchors → ~1.5M active Gaussians |
+| Scene size @ 8GB (Jetson) | ~30M Gaussians | ~120K anchors → ~600K active Gaussians |
+| Scene size @ 12GB (dGPU) | ~30M Gaussians | ~300K anchors → ~1.5M active Gaussians |
 | Max scene extent | GPU-limited | Unlimited (disk-backed) |
 | Render quality (PSNR) | baseline | comparable (+ isotropic regularization) |
 | Training speed | baseline | +10–20% (MLP overhead per iteration) |
 
-The 300K anchor threshold produces up to 1.5M active child Gaussians in memory, while arbitrary numbers of inactive chunks reside on disk, enabling effectively unbounded scene reconstruction.
+The anchor threshold (120K for Jetson 8GB, 300K for desktop 12GB+) produces up to 5× that many active child Gaussians in memory, while arbitrary numbers of inactive chunks reside on disk, enabling effectively unbounded scene reconstruction.
 
 ---
 
