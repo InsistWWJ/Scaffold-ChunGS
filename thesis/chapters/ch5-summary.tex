@@ -16,11 +16,11 @@
         定义了64-bit Chunk ID空间编码方案与锚点级空间分块策略；实现了LRU淘汰算法（含5\%滞后缓冲区防止震荡）与异步并行块I/O；定义了自包含的\schun 二进制块格式，完整保存锚点参数与Adam优化器状态，支持训练暂停与恢复。
         该方案使场景规模从GPU显存上限扩展至磁盘容量上限。
 
-    \item \textbf{构建了统一的C++/LibTorch系统框架。}
-        集成两级视锥剔除（块级AABB测试+锚点级球体测试）、多目标损失函数（L1+SSIM+深度+各向同性正则化）、基于损失加权的关键帧采样以及8组Adam参数更新调度。在合成球面场景上验证了系统的端到端功能完整性。
+    \item \textbf{构建了DiskChunGS对齐的完整SLAM系统框架。}
+        实现了两阶段Mapper管线（Phase 1初始建图定量累积+批量种子；Phase 2增量映射的\verb|combineMappingOperations|分发机制），集成了SLAMSystemInterface抽象层与BuiltinSLAMAdapter自包含前端（ORB+PnP视觉跟踪 + k-means BoVW回环闭合 + SE(3)位姿图优化），以及GLFW+OpenGL+ImGui实时可视化模块。在合成球面场景上验证了系统的端到端功能完整性。
 
     \item \textbf{设计了完整的实验分析框架。}
-        从压缩效果、内存管理行为、关键参数消融三个维度构建了评测方案，为后续在真实数据集上的完整评测提供了模板。
+        从压缩效果、内存管理行为、关键参数消融三个维度构建了评测方案，并设计了KITTI室外自动驾驶数据集的完整评测体系（ATE/RPE/渲染质量/磁盘占用），为后续在真实数据集上的系统对标提供了路线图。
 \end{enumerate}
 
 \section{未来工作展望}
@@ -33,12 +33,12 @@
         当前系统的CUDA光栅化器为简化点泼溅实现，渲染质量与原始3DGS的tile-based排序混合存在差距\cite{kerbl20233dgaussians}。
         将该模块替换为INRIA的\verb|diff_gaussian_rasterization|是实现与SOTA方法（如Compact\_GSSLAM\cite{chen2025compact}、Photo-SLAM\cite{huang2024photoslam}）公平定量对比的前提。
 
-    \item \textbf{闭环检测与全局BA集成。}
-        当前系统依赖外部位姿输入，缺乏闭环检测能力（NetVLAD全局描述子检索\cite{arandjelovic2016netvlad} + GICP几何校验 + 3DGS配准）与全局BA优化，长期运行存在累积漂移。
-        Compact\_GSSLAM\cite{chen2025compact}和DiskChunGS\cite{feldmann2026diskchungs}已分别验证了各自的闭环方案，可移植至本系统。
+    \item \textbf{回环检测升级。}
+        当前系统已实现基于k-means BoVW + PnP验证的回环检测与SE(3)位姿图优化。未来工作可将其升级为学习型全局描述子（NetVLAD\cite{arandjelovic2016netvlad} 或 DINOv2），提升在挑战性场景（光照变化、季节变化）下的召回率。
+        Compact\_GSSLAM\cite{chen2025compact}和DiskChunGS\cite{feldmann2026diskchungs}已分别验证了各自的闭环方案，可参考其策略。
 
-    \item \textbf{实时可视化界面。}
-        将DiskChunGS的OpenGL/ImGui实时渲染器移植至本系统，支持训练过程的交互式可视化与调试。
+    \item \textbf{可视化升级为splat渲染。}
+        当前GLFW+OpenGL+ImGui实时可视化已支持点云、视锥和轨迹渲染。未来工作可接入CUDA光栅化器实现可视化窗口内的全质量高斯泼溅渲染，使训练过程与预览体验统一。
 
     \item \textbf{优化器状态增量更新。}
         当前锚点生长后需完整重建Adam优化器（`trainingSetup`），效率较低。

@@ -76,7 +76,7 @@
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
     \item \textbf{锚点压缩场景表示的设计与实现。}构建体素化锚点初始化、视角条件MLP解码器、层级化锚点生长与剪枝的完整管线，实现约8.6倍的存储压缩比。
     \item \textbf{锚点粒度的分块外存管理。}设计锚点级空间分块策略与64-bit Chunk ID编码方案，实现LRU淘汰、异步并行块I/O、内存压力自动监控，定义自包含的\schun 二进制块格式。
-    \item \textbf{统一C++/LibTorch系统框架的构建。}在C++17/CUDA环境下集成两级视锥剔除、多目标损失优化、关键帧采样等模块，并通过合成场景验证系统功能完整性。
+    \item \textbf{统一C++/LibTorch系统框架的构建。}在C++17/CUDA环境下集成两级视锥剔除、多目标损失优化、关键帧采样等模块，实现DiskChunGS对齐的两阶段SLAM Mapper管线、SLAMSystemInterface抽象层与BuiltinSLAMAdapter自包含前端（ORB+PnP跟踪 + BoVW回环闭合）、以及GLFW+OpenGL+ImGui实时可视化，并通过合成场景验证系统功能完整性。
 \end{enumerate}
 
 \section{论文章节安排}
@@ -86,7 +86,7 @@
 \begin{itemize}
     \item \textbf{第一章 绪论。}介绍研究背景、国内外研究现状、主要研究内容及论文结构。
     \item \textbf{第二章 相关技术基础。}阐述3DGS、Scaffold-GS锚点表示、DiskChunGS分块管理及视觉SLAM的基础理论。
-    \item \textbf{第三章 系统设计与实现。}详细描述\ScaffoldChunGS 的总体架构及四大模块（锚点表示、块管理、渲染、训练）的设计与实现。
+    \item \textbf{第三章 系统设计与实现。}详细描述\ScaffoldChunGS 的总体架构及十大模块（锚点表示、块管理、渲染、训练、深度估计、视觉跟踪、回环闭合、SLAM系统接口、两阶段Mapper管线、实时可视化）的设计与实现。
     \item \textbf{第四章 实验与分析。}在合成场景上验证系统功能，分析压缩率、内存管理与消融实验结果。
     \item \textbf{第五章 总结与展望。}总结全文工作，指出当前局限并展望未来改进方向。
 \end{itemize}

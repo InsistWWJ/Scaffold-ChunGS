@@ -17,9 +17,17 @@
 \begin{minipage}{0.92\textwidth}
 \centering
 \vspace{6pt}
-\textbf{RGB-D / Stereo Frames} \\
+\textbf{Sensor Data (Mono / Stereo / RGB-D)} \\
 $\downarrow$ \\
-\textbf{GaussianKeyframe}（位姿 + 内参 + 图像金字塔）\\
+\textbf{SLAMSystemInterface}（\texttt{trackMono/Stereo/RGBD}）\\
+$\downarrow$ \\
+\textbf{MappingOperation Queue}（LocalBA / LoopBA / ScaleRefinement）\\
+$\downarrow$ \\
+\textbf{ScaffoldMapper -- Two-Phase Loop} \\
+\qquad Phase 1: 积累 KFs $\to$ 批量种子 $\to$ 初训 \\
+\qquad Phase 2: \texttt{combineMappingOperations()} $\to$ 分发调度 \\
+$\downarrow$ \\
+\textbf{DepthEstimator}（SGBM 双目 / TensorRT 单目）$\to$ \textbf{GaussianKeyframe} \\
 $\downarrow$ \\
 \textbf{FrustumCuller}（两级可见性剔除）\\
 $\downarrow$ \\
@@ -43,7 +51,7 @@ $\downarrow$ \\
 
 \subsection{模块划分与技术栈}
 
-系统由六大核心模块组成：
+系统由十大核心模块组成：
 
 \begin{table}[htbp]
 \centering
@@ -57,8 +65,12 @@ $\downarrow$ \\
 分块内存管理 & 空间分块、LRU淘汰、异步I/O & Eigen3, STL threading \\
 渲染子系统 & 视锥剔除、双后端光栅化 & CUDA, Eigen3 \\
 训练子系统 & 损失计算、关键帧采样、调度 & LibTorch, OpenCV \\
-深度估计 & 单目TensorRT/双目立体深度 & TensorRT, OpenCV \\
-SLAM Mapper & 帧队列、KF决策、局部窗口BA & LibTorch, STL threading \\
+深度估计 & 单目TensorRT/双目SGBM立体深度 & TensorRT, OpenCV \\
+视觉跟踪 & ORB特征+FLANN匹配+PnP+RANSAC & OpenCV, Eigen3 \\
+回环闭合 & k-means BoVW + SE(3)位姿图优化 & OpenCV, Eigen3 \\
+SLAM系统接口 & SLAMSystemInterface + MappingOperation队列 & LibTorch, STL \\
+SLAM Mapper & 两阶段DiskChunGS对齐管线 & LibTorch, STL threading \\
+实时可视化 & GLFW+OpenGL+ImGui交互式渲染 & GLFW, OpenGL \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -410,31 +422,117 @@ MLP权重（颜色） & 0.0025 & -- \\
 \begin{itemize}
     \item 设计为加载TensorRT推理引擎（如DepthAnything模型），接受RGB图像并输出稠密深度图。
     \item 通过\verb|initialize(engine_path)|加载TensorRT引擎并创建推理上下文。
-    \item 当前为存根实现，输出占位深度图；生产环境中需接入实际的TensorRT引擎加载与预处理/后处理管线。
+    \item 完整的TensorRT推理管线已实现，生产环境中需配合预编译的DepthAnything引擎文件使用。
 \end{itemize}
 
 \textbf{双目深度估计（StereoDepthEstimator）：}
 \begin{itemize}
-    \item 基于双目视觉原理：深度$d = b\cdot f_x / \delta$，其中$b$为基线长，$f_x$为焦距，$\delta$为视差值。
-    \item 接受左右目图像，通过立体匹配（如RAFT-Stereo或ORB-SLAM3的立体匹配器）计算视差图后转换为深度图。
-    \item 默认参数：基线0.12 m，焦距500像素；当前为存根实现，待接入真实立体匹配算法。
+    \item 基于OpenCV的\verb|cv::StereoSGBM|实现，执行半全局块匹配（Semi-Global Block Matching）立体匹配。
+    \item 深度计算：$d = b\cdot f_x / \delta$，其中$b$为基线长，$f_x$为焦距，$\delta$为视差值。
+    \item 支持左右一致性检查（LR consistency check）以过滤遮挡区域的不可靠深度值，输出逐像素置信度掩码。
+    \item 默认参数：基线0.12 m，焦距500像素，SGBM块大小5$\times$5，最小视差0，最大视差128。
 \end{itemize}
 
 \textbf{工厂函数：}\verb|createDepthEstimator(DepthSource, model_path)|根据枚举类型自动构建对应的深度估计器实例，便于系统在单目与双目模式间切换。
 
-\subsection{SLAM Mapper管线}
+\subsection{SLAM前端——视觉跟踪}
 
-Mapper管线实现于\verb|src/mapper/mapper_core.cpp|（接口定义于\verb|include/scaffold_chunks/gaussian_mapper.h|），作为系统的顶层编排器，协调以下SLAM核心流程：
+视觉跟踪模块实现于\verb|src/slam/tracking.cpp|（接口定义于\verb|include/scaffold_chunks/tracking.h|），提供帧间位姿估计的核心功能。
 
-\textbf{帧队列处理：}接收传感器数据流，维护一个固定容量的帧队列。每帧数据包含RGB图像、深度图（或深度估计结果）及可选位姿先验。
+\textbf{ORB特征提取与匹配：}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item 对相邻帧提取ORB特征点（默认500个），计算BRIEF描述子。
+    \item 使用FLANN匹配器进行描述子匹配，通过Lowe's ratio test（阈值0.7）滤除误匹配。
+    \item 利用深度图将匹配的2D特征点反投影为3D点，构建3D-2D对应关系。
+\end{enumerate}
 
-\textbf{关键帧决策：}基于旋转/平移阈值或损失加权策略决定是否将当前帧提升为关键帧。新关键帧通过\verb|GaussianKeyframe|封装并加入\verb|GaussianScene|容器。每帧关键帧默认被选取用于训练8次（\verb|new_keyframe_times_of_use|）。
+\textbf{PnP位姿估计：}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item 使用EPnP + RANSAC从3D-2D对应关系中鲁棒估计相机位姿。
+    \item RANSAC内点阈值设为2.0像素，最大迭代200次。
+    \item 当深度信息不足时，回退至本质矩阵（5点法）+ 三角化恢复位姿。
+\end{enumerate}
 
-\textbf{高斯种子生成：}对新关键帧覆盖的未建模区域，通过深度反投影生成3D点云，经体素化后通过\verb|GaussianModel::initializeFromPoints|或\verb|addAnchors|增量添加锚点。GPU批量去重确保新锚点不与既有锚点位置重叠。
+\textbf{运动模型：}维护恒定速度运动模型，当跟踪丢失时以模型预测值初始化新帧位姿。
 
-\textbf{局部窗口BA：}对最新$W$个关键帧（默认窗口大小5帧）执行局部窗口优化。每窗口运行固定次数的训练迭代，包含锚点生长与剪枝的定期触发。该设计在增量建图与计算效率之间取得平衡，避免全局优化随轨迹增长而性能退化。
+\subsection{SLAM前端——回环闭合}
 
-\textbf{回环检测存根：}预留了回环检测接口（基于NetVLAD全局描述子检索 + GICP几何校验的经典方案），当前为空实现，待后续集成。
+回环闭合模块实现于\verb|src/slam/loop_closing.cpp|（接口定义于\verb|include/scaffold_chunks/loop_closing.h|），负责检测并修正长期累积漂移。
+
+\textbf{场景识别（Place Recognition）：}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item 对每帧ORB描述子构建k-means词袋（BoVW）词汇表（默认10个聚类中心）。
+    \item 对新关键帧，计算其BoVW直方图并与历史关键帧进行余弦相似度检索。
+    \item 超过相似度阈值且间隔$\geq$50帧的候选帧进入几何验证阶段。
+\end{enumerate}
+
+\textbf{几何验证与位姿图优化：}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item 对候选回环帧，使用PnP + RANSAC验证3D-2D对应关系，计算相对位姿。
+    \item 构建位姿图：节点为关键帧位姿，边为帧间约束（里程计边 + 回环边）。
+    \item 在SE(3)流形上执行Gauss-Newton优化，最小化位姿图残差。
+    \item 将优化后的位姿变换应用于受影响的子高斯位置，确保场景几何的一致性。
+\end{enumerate}
+
+\textbf{与Mapper的协作：}回环检测在\verb|BuiltinSLAMAdapter::detectAndEnqueueLoop|中触发，通过\verb|MappingOperation(OprType::LoopClosingBA)|进入Mapper的\verb|combineMappingOperations|队列。处理回环时Mapper暂停帧接收（\verb|pause_frame_ingestion_ = true|），完成\verb|loop_closure_optimization_iterations|（默认1000次）次额外训练迭代后恢复。
+
+\subsection{SLAM系统接口层}
+
+SLAM系统接口层实现于\verb|include/scaffold_chunks/slam_system.h|和\verb|src/slam/builtin_adapter.cpp|，是连接SLAM前端与高斯Mapper的抽象桥梁。
+
+\textbf{SLAMSystemInterface：}定义统一的前端接口，包含\verb|trackMonocular|、\verb|trackStereo|、\verb|trackRGBD|三种传感器模式的位姿估计接口，以及\verb|hasMappingOperation|和\verb|getAndPopMappingOperation|队列接口。该抽象使系统可以自由替换前端实现（从内置适配器到完整ORB-SLAM3集成）而无需改动Mapper。
+
+\textbf{MappingOperation：}镜像ORB-SLAM3的Atlas操作类型，以\verb|OprType|枚举区分LocalMappingBA（局部BA）、LoopClosingBA（回环BA）和ScaleRefinement（尺度精化）。每个操作携带关联的关键帧元组\verb|KFTuple|（包含关键帧ID、相机ID、位姿$T_{cw}$、RGB图像、回环标志及辅助图像）。
+
+\textbf{BuiltinSLAMAdapter：}是\verb|SLAMSystemInterface|的自包含实现，内部持有\verb|TrackingModule|和\verb|LoopClosingModule|实例。\verb|trackMonocular|/\\ \verb|trackStereo|/ \verb|trackRGBD|方法调用对应跟踪逻辑并返回位姿；\verb|detectAndEnqueueLoop|方法定期（每10帧，ID > 50）执行回环检测并构造\verb|MappingOperation|入队。
+
+\subsection{SLAM Mapper管线（DiskChunGS对齐）}
+
+Mapper管线实现于\verb|src/mapper/mapper_core.cpp|（接口定义于\verb|include/scaffold_chunks/gaussian_mapper.h|），采用DiskChunGS对齐的两阶段设计，作为系统的顶层编排器。
+
+\textbf{架构设计：}Mapper提供两种构造模式——SLAM模式（接收\verb|SLAMSystemInterface|共享指针）与外部模式（接收外部位姿输入），使系统可灵活切换自主SLAM或离线全局优化模式。
+
+\textbf{两阶段运行循环（\texttt{run()}）：}
+
+\textbf{Phase 1 —— 初始建图：}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item 循环处理传入帧数据：若处于SLAM模式，通过\verb|slam_system_->trackStereo()|等接口获取位姿；若为外部模式，直接使用传入位姿。
+    \item 将每帧封装为\verb|GaussianKeyframe|，累积至\verb|GaussianScene|容器。
+    \item 当满足初始建图条件（累积$\geq$\verb|min_num_initial_map_kfs|帧）时，从SLAM系统拉取并处理待处理的\verb|MappingOperation|。
+    \item 为所有关键帧批量生成高斯种子（\verb|sampleGaussians|），调用\verb|model_->trainingSetup|初始化优化器。
+    \item 执行一次训练迭代后进入Phase 2。
+\end{enumerate}
+
+\textbf{Phase 2 —— 增量映射：}
+\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+    \item 持续接收新帧，由SLAM系统判定是否生成新关键帧及\verb|MappingOperation|。
+    \item 定期调用\verb|combineMappingOperations()|：将所有队列中的操作按类型分组（LocalBA、LoopBA、ScaleRefinement）。
+    \item LocalBA批量处理：从操作关联的关键帧中采样高斯并进行局部窗口训练。
+    \item LoopBA处理：暂停帧接收（100ms缓冲），应用回环变换至受影响的子高斯，执行额外\verb|loop_closure_optimization_iterations|（默认1000）次训练。
+    \item 每次迭代执行\verb|trainForOneIteration()|：选择关键帧 $\to$ 视锥剔除 $\to$ MLP展开 $\to$ 渲染 $\to$ 损失计算 $\to$ 反向传播 $\to$ Adam更新 $\to$ 定期稠密化。
+\end{enumerate}
+
+\textbf{回环闭合内存管理：}在回环闭合期间，\verb|loop_closure_memory_multiplier_|（默认8.0$\times$）将GPU锚点上限临时扩大，以容纳回环区域可能加载的额外块，避免在关键优化阶段触发频繁淘汰。
+
+\subsection{实时可视化模块}
+
+实时可视化模块实现于\verb|src/viewer/gaussian_viewer.cpp|（接口定义于\verb|include/scaffold_chunks/gaussian_viewer.h|），提供独立线程运行的交互式3D场景查看器。
+
+\textbf{渲染架构：}
+\begin{itemize}
+    \item 基于GLFW窗口 + OpenGL 3.3核心上下文，以独立线程运行，与Mapper线程解耦。
+    \item 双缓冲\verb|ViewerFrameData|结构：Mapper线程写入当前帧数据快照（高斯点云、相机位姿、关键帧列表），Viewer线程以互斥锁保护读取。
+    \item 绘制三类元素：相机视锥（绿色线段表示图像平面四角+相机中心连线）、关键帧轨迹（橙色折线连接所有KF位置）、高斯点云（按颜色的3D包围球/点）。
+\end{itemize}
+
+\textbf{交互控制：}
+\begin{itemize}
+    \item \textbf{轨道相机：}鼠标左键拖动旋转（方位角+仰角）、中键拖动平移、滚轮缩放。
+    \item \textbf{ImGui控制面板：}实时显示FPS、锚点数量、训练迭代数；提供渲染开关（视锥/点云/网格）、点大小滑块、背景色设置。
+    \item 默认窗口分辨率1920$\times$1080，背景深灰（RGB 0.15, 0.15, 0.15）。
+\end{itemize}
+
+\textbf{与Mapper的数据交互：}Mapper通过\verb|submitFrameData()|接口推送每帧快照；Viewer仅读取快照副本，不直接访问\verb|GaussianModel|或\verb|GaussianScene|，确保线程安全。
 
 \section{关键工程实现细节}
 
@@ -474,11 +572,16 @@ Mapper管线实现于\verb|src/mapper/mapper_core.cpp|（接口定义于\verb|in
 \verb|src/training/losses.cpp| & \S3.4.3 \\
 \verb|src/training/trainer.cpp| & \S3.4.4 \\
 \verb|src/depth/depth_estimator.cpp| & \S3.4.5 \\
-\verb|src/mapper/mapper_core.cpp| & \S3.4.6 \\
+\verb|src/slam/tracking.cpp| & \S3.4.6 \\
+\verb|src/slam/loop_closing.cpp| & \S3.4.7 \\
+\verb|include/.../slam_system.h| & \S3.4.8 \\
+\verb|src/slam/builtin_adapter.cpp| & \S3.4.8 \\
+\verb|src/mapper/mapper_core.cpp| & \S3.4.9 \\
+\verb|src/viewer/gaussian_viewer.cpp| & \S3.4.10 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \section{本章小结}
 
-本章详细阐述了\ScaffoldChunGS 系统的设计与实现。系统以六大模块——锚点压缩表示、分块外存管理、双后端渲染、多目标训练、深度估计与SLAM Mapper管线——为核心，在C++17/CUDA/LibTorch技术栈上构建了完整的3D高斯SLAM管线。核心设计决策包括：锚点粒度块管理使压缩与扩展机制对齐、双后端渲染策略（INRIA CUDA光栅化器 + 纯LibTorch回退）兼顾性能与可移植性、两级视锥剔除减少无效计算、LRU+5\%滞后策略平衡性能与稳定性、自包含\schun 格式支持训练持久化。第四章将通过实验验证系统的有效性。
+本章详细阐述了\ScaffoldChunGS 系统的设计与实现。系统以十大模块——锚点压缩表示、分块外存管理、双后端渲染、多目标训练、深度估计（SGBM+TensorRT）、视觉跟踪（ORB+PnP）、回环闭合（BoVW+SE(3)）、SLAM系统接口（SLAMSystemInterface+MappingOperation）、两阶段DiskChunGS对齐Mapper管线与实时可视化——为核心，在C++17/CUDA/LibTorch技术栈上构建了完整的3D高斯SLAM管线。核心设计决策包括：锚点粒度块管理使压缩与扩展机制对齐、双后端渲染策略（INRIA CUDA光栅化器 + 纯LibTorch回退）兼顾性能与可移植性、两级视锥剔除减少无效计算、LRU+5\%滞后策略平衡性能与稳定性、自包含\schun 格式支持训练持久化、DiskChunGS对齐的两阶段Mapper（Phase 1初始建图+Phase 2增量映射）及其MappingOperation分发机制。第四章将通过实验验证系统的有效性。

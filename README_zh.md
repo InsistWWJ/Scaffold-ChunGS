@@ -77,11 +77,14 @@
   │  └──────────┘  └──────────┘  └──────────┘          │
   └─────────────────────────────────────────────────────┘
 
-  ┌─────────────────────────────────────────────────────┐
-  │  ScaffoldMapper (SLAM 管线)                         │
-  │  帧队列 → KF 决策 → 高斯种子                         │
-  │  → 局部窗口 BA (每窗口 5 次迭代)                     │
-  │  → 回环检测 (存根)                                   │
+  ├─────────────────────────────────────────────────────┤
+  │  SLAMSystemInterface → MappingOperations                │
+  │  ├─ BuiltinSLAMAdapter (ORB+FLANN+PnP / k-means BoVW+SE3)  │
+  │                                                        │
+  │  ScaffoldMapper (Two-Phase, DiskChunGS-aligned)       │
+  │  Phase 1: 初始建图 (积累N个KF → 批量种子 → BA)         │
+  │  Phase 2: combineMappingOperations() → LocalBA/LoopBA  │
+  │          trainForOneIteration() (select→cull→render)  │
   └─────────────────────────────────────────────────────┘
 ```
 
@@ -94,6 +97,8 @@
 3. **分块在 Anchor 粒度上操作**。每个 chunk 文件（`.schun` 二进制格式）存储其空间区域内所有 anchor 张量及其 Adam 优化器状态。LRU 淘汰策略追踪访问时间戳，当 `max_anchors_in_memory` 超限时，将最近最少可见的 chunk 交换到磁盘。
 
 4. **Anchor 生长/加密**采用基于层次梯度的种子策略（与 Compact_GSSLAM 一致：`update_depth=3` 层，`update_hierarchy_factor=4`），确保新 anchor 被放置在光度误差较大的区域。
+
+5. **DiskChunGS-aligned SLAM 管线**。Mapper 采用两阶段设计：Phase 1 积累初始关键帧并批量种子高斯；Phase 2 从 `SLAMSystemInterface` 轮询 `MappingOperation` 并通过 `combineMappingOperations()` 分发——支持局部 BA、回环闭合 BA 和尺度精化（镜像 ORB-SLAM3 的操作类型）。`BuiltinSLAMAdapter` 提供自包含的 ORB+PnP 跟踪和 k-means BoVW 回环检测，无需外部 SLAM 依赖。
 
 ---
 
@@ -109,7 +114,7 @@ Scaffold-ChunGS/
 │       └── scaffold_chunks.yaml    # 主配置文件
 ├── include/scaffold_chunks/
 │   ├── chunk_types.h               # ChunkCoord、64 位编码、AABB
-│   ├── config.h                    # 配置结构体 (YAML → C++)
+│   ├── config.h                    # 配置结构体 + DiskChunGS 对齐的配置段
 │   ├── anchor_mlp.h                # AnchorMLP 解码器
 │   ├── gaussian_model.h            # 核心 anchor-based GaussianModel
 │   ├── gaussian_renderer.h         # ScaffoldRenderer 渲染管线
@@ -119,7 +124,11 @@ Scaffold-ChunGS/
 │   ├── keyframe_selection.h        # 基于损失的 KF 选取
 │   ├── training_loss.h             # 共享 TrainingLoss 结构体与 computeLosses
 │   ├── depth_estimator.h           # 单目深度 + 双目深度估计器
-│   └── gaussian_mapper.h           # 完整 SLAM Mapper 管线
+│   ├── slam_system.h               # SLAMSystemInterface + BuiltinSLAMAdapter + MappingOperation
+│   ├── tracking.h                  # ORB+FLANN+PnP 视觉里程计模块
+│   ├── loop_closing.h              # k-means BoVW + SE(3) 位姿图优化
+│   ├── gaussian_mapper.h           # 两阶段 DiskChunGS 对齐的 SLAM Mapper
+│   └── gaussian_viewer.h           # GLFW+OpenGL+ImGui 实时可视化
 ├── src/
 │   ├── model/
 │   │   ├── model_core.cpp          # Anchor 增删查改、体素化 (GPU 去重)
@@ -138,9 +147,15 @@ Scaffold-ChunGS/
 │   │   ├── losses.cpp              # L1 + SSIM + 各向同性 + 深度损失
 │   │   └── trainer.cpp             # 训练循环 + YAML 配置加载
 │   ├── depth/
-│   │   └── depth_estimator.cpp     # 单目深度 (TensorRT) + 双目深度
-│   └── mapper/
-│       └── mapper_core.cpp         # 帧队列、KF 决策、高斯种子、局部 BA
+│   │   └── depth_estimator.cpp     # 单目深度 (TensorRT) + 双目深度 (SGBM)
+│   ├── slam/
+│   │   ├── tracking.cpp            # ORB 提取、FLANN 匹配、PnP+RANSAC
+│   │   ├── loop_closing.cpp        # BoVW 词汇表、PnP 验证、SE(3) 优化
+│   │   └── builtin_adapter.cpp     # BuiltinSLAMAdapter 实现
+│   ├── mapper/
+│   │   └── mapper_core.cpp         # 两阶段 run()、combineMappingOperations()、训练
+│   └── viewer/
+│       └── gaussian_viewer.cpp     # OpenGL 渲染 + ImGui 仪表板
 ├── scripts/                        # 辅助脚本 (数据准备、评估)
 ├── examples/
 │   └── scaffold_chunks_demo.cpp    # 端到端合成场景演示
@@ -392,6 +407,37 @@ model->saveAllChunks();
 | `Optimization.max_num_iterations` | int | -1 | 最大训练迭代次数（-1 = 无限制）。 |
 | `Optimization.new_keyframe_times_of_use` | int | 8 | 每个新关键帧用于训练的次数。 |
 
+### Mapper 参数 (DiskChunGS 对齐)
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `Mapper.min_depth` | float | 0.01 | 高斯种子近裁剪面深度。 |
+| `Mapper.max_depth` | float | 100.0 | 高斯种子远裁剪面深度。 |
+| `Mapper.min_num_initial_map_kfs` | int | 10 | 完成 Phase-1 初始建图所需关键帧数。 |
+| `Mapper.new_keyframe_times_of_use` | int | 8 | 新添加关键帧的训练迭代次数。 |
+| `Mapper.local_BA_increased_times_of_use` | int | 4 | 局部 BA 期间额外使用次数加成。 |
+| `Mapper.loop_closure_increased_times_of_use` | int | 8 | 回环闭合期间额外使用次数加成。 |
+| `Mapper.loop_closure_optimization_iterations` | int | 1000 | 回环闭合后的训练迭代次数。 |
+| `Mapper.loop_closure_memory_multiplier` | float | 8.0 | 回环闭合期间内存扩展因子（用于容纳额外 chunk）。 |
+| `Mapper.auto_distribute_learning_rates` | bool | true | 根据关键帧年龄自动调整学习率。 |
+
+### Gaussian Pyramid 参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `GausPyramid.num_sub_levels` | int | 1 | 降采样金字塔层数。 |
+| `GausPyramid.factors` | float[] | [1.0, 0.5, 0.25] | 每层缩放因子。 |
+| `GausPyramid.times_of_use` | int[] | [8, 4, 2] | 每层训练迭代次数。 |
+
+### Pipeline 标志
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `Pipeline.convert_SHs` | bool | false | 转换球谐函数（未使用：MLP 直接预测颜色）。 |
+| `Pipeline.compute_cov3D` | bool | true | 从缩放+旋转四元数构建 3D 协方差矩阵。 |
+| `Pipeline.use_pose_optimization` | bool | false | 联合优化相机位姿与高斯参数。 |
+| `Pipeline.use_exposure_optimization` | bool | false | 优化逐帧仿射曝光（亮度 + 对比度）。 |
+
 ---
 
 ## Chunk 二进制格式 (`.schun`)
@@ -437,10 +483,10 @@ Anchor 阈值（Jetson 8GB 为 120K，桌面 12GB+ 为 300K）可在内存中容
 
 ## 局限性与未来工作
 
-1. **尚无回环检测** — 来自 Compact_GSSLAM（NetVLAD + GICP + 3DGS 配准）和 DiskChunGS（ORB-SLAM3 BA）的位姿图 + 回环检测管线可在上层集成。
-2. **暂无实时可视化** — DiskChunGS 中的 OpenGL ImGui 可视化模块可移植。
-3. **深度估计器为存根实现** — `MonoDepthEstimator` 和 `StereoDepthEstimator` 目前为占位实现；需接入 TensorRT 引擎加载（DepthAnything）和真实立体匹配（RAFT-Stereo）。
-4. **Mapper 管线为框架代码** — `ScaffoldMapper` 提供了完整的 SLAM 管线骨架（帧队列、KF 决策、高斯种子、局部窗口 BA、回环检测存根），但跟踪与回环检测尚未与真实 SLAM 前端集成。
+1. **回环检测使用基础 BoVW** — 当前 k-means BoVW + PnP 验证功能可用，但可升级为基于学习的描述子（NetVLAD、DINOv2）以在挑战性环境中获得更高召回率。
+2. **可视化仅支持点云模式** — GLFW+OpenGL+ImGui 可视化支持渲染视锥、关键帧和高斯点云；基于 splat 的渲染（使用 CUDA 光栅化器）正在计划中。
+3. **单目深度需要 TensorRT 引擎文件** — `MonoDepthEstimator` 包含完整的 TensorRT 推理管线，但需要预编译的 DepthAnything 引擎文件；双目 SGBM 已完全可用。
+4. **不支持多会话地图复用** — chunk 文件 (`.schun`) 支持外存持久化存储，但重新加载已保存的地图以在新会话中继续 SLAM 尚未实现。
 
 ---
 

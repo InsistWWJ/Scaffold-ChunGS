@@ -76,14 +76,15 @@ By combining these techniques in a unified C++/LibTorch framework, Scaffold-Chun
   │  │ (on disk)│  │ (on disk)│  │ (on disk)│          │
   │  └──────────┘  └──────────┘  └──────────┘          │
   └─────────────────────────────────────────────────────┘
-
-  ┌─────────────────────────────────────────────────────┐
-  │  ScaffoldMapper (SLAM Pipeline)                     │
-  │  Frame queue → KF decision → Gaussian seeding       │
-  │  → Local window BA (5 iters/window)                 │
-  │  → Loop closure (stub)                              │
+  ├─────────────────────────────────────────────────────┤
+  │  SLAMSystemInterface → MappingOperations                │
+  │  ├─ BuiltinSLAMAdapter (ORB+FLANN+PnP / k-means BoVW+SE3)  │
+  │                                                        │
+  │  ScaffoldMapper (Two-Phase, DiskChunGS-aligned)       │
+  │  Phase 1: Initial mapping (N KFs → batch-seed → BA)   │
+  │  Phase 2: combineMappingOperations() → LocalBA/LoopBA  │
+  │          trainForOneIteration() (select→cull→render)  │
   └─────────────────────────────────────────────────────┘
-```
 
 ### Key Design Decisions
 
@@ -94,6 +95,8 @@ By combining these techniques in a unified C++/LibTorch framework, Scaffold-Chun
 3. **Chunks operate at anchor granularity**. Each chunk file (`.schun` binary format) stores all anchor tensors + Adam optimizer states for its spatial region. The LRU eviction policy tracks access timestamps and swaps the least-recently-visible chunks to disk when `max_anchors_in_memory` is exceeded.
 
 4. **Anchor growing/densification** uses hierarchical gradient-based seeding (same as Compact_GSSLAM: `update_depth=3` levels, `update_hierarchy_factor=4`), ensuring new anchors are placed where photometric error is high.
+
+5. **DiskChunGS-aligned SLAM pipeline**. The mapper follows a two-phase design: Phase 1 accumulates initial keyframes and batch-seeds Gaussians; Phase 2 polls `MappingOperation`s from a `SLAMSystemInterface` and dispatches them via `combineMappingOperations()` — supporting Local BA, Loop Closing BA, and Scale Refinement (mirroring ORB-SLAM3's operation types). A `BuiltinSLAMAdapter` provides self-contained ORB+PnP tracking and k-means BoVW loop closing without external SLAM dependencies.
 
 ---
 
@@ -108,7 +111,7 @@ Scaffold-ChunGS/
 │       └── scaffold_chunks.yaml    # Master configuration
 ├── include/scaffold_chunks/
 │   ├── chunk_types.h               # ChunkCoord, 64-bit encoding, AABB
-│   ├── config.h                    # Config structs (YAML → C++)
+│   ├── config.h                    # Config structs + DiskChunGS-aligned sections
 │   ├── anchor_mlp.h                # AnchorMLP decoders
 │   ├── gaussian_model.h            # Core anchor-based GaussianModel
 │   ├── gaussian_renderer.h         # ScaffoldRenderer pipeline
@@ -118,7 +121,11 @@ Scaffold-ChunGS/
 │   ├── keyframe_selection.h        # Loss-weighted KF selection
 │   ├── training_loss.h             # Shared TrainingLoss struct + computeLosses
 │   ├── depth_estimator.h           # MonoDepth + StereoDepth estimators
-│   └── gaussian_mapper.h           # Full SLAM mapper pipeline
+│   ├── slam_system.h               # SLAMSystemInterface + BuiltinSLAMAdapter + MappingOperation
+│   ├── tracking.h                  # ORB+FLANN+PnP visual odometry module
+│   ├── loop_closing.h              # k-means BoVW + SE(3) pose graph optimization
+│   ├── gaussian_mapper.h           # Two-phase DiskChunGS-aligned SLAM mapper
+│   └── gaussian_viewer.h           # GLFW+OpenGL+ImGui real-time viewer
 ├── src/
 │   ├── model/
 │   │   ├── model_core.cpp          # Anchor CRUD, voxelization (GPU dedup)
@@ -137,9 +144,15 @@ Scaffold-ChunGS/
 │   │   ├── losses.cpp              # L1 + SSIM + isotropic + depth loss
 │   │   └── trainer.cpp             # Training loop + YAML config loader
 │   ├── depth/
-│   │   └── depth_estimator.cpp     # MonoDepth (TensorRT) + StereoDepth
-│   └── mapper/
-│       └── mapper_core.cpp         # Frame queue, KF decision, seeding, BA
+│   │   └── depth_estimator.cpp     # MonoDepth (TensorRT) + StereoDepth (SGBM)
+│   ├── slam/
+│   │   ├── tracking.cpp            # ORB extraction, FLANN matching, PnP+RANSAC
+│   │   ├── loop_closing.cpp        # BoVW vocabulary, PnP verification, SE(3) optimization
+│   │   └── builtin_adapter.cpp     # BuiltinSLAMAdapter implementation
+│   ├── mapper/
+│   │   └── mapper_core.cpp         # Two-phase run(), combineMappingOperations(), training
+│   └── viewer/
+│       └── gaussian_viewer.cpp     # OpenGL rendering + ImGui dashboard
 ├── scripts/                        # Utility scripts (data prep, eval)
 ├── examples/
 │   └── scaffold_chunks_demo.cpp    # End-to-end demo with synthetic scene
@@ -391,6 +404,37 @@ model->saveAllChunks();
 | `Optimization.max_num_iterations` | int | -1 | Max training iters (-1 = unlimited). |
 | `Optimization.new_keyframe_times_of_use` | int | 8 | How many times each new KF is used for training. |
 
+### Mapper Parameters (DiskChunGS-aligned)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `Mapper.min_depth` | float | 0.01 | Near depth clip for Gaussian seeding. |
+| `Mapper.max_depth` | float | 100.0 | Far depth clip for Gaussian seeding. |
+| `Mapper.min_num_initial_map_kfs` | int | 10 | Keyframes required to complete Phase-1 initial mapping. |
+| `Mapper.new_keyframe_times_of_use` | int | 8 | Training iterations for a newly added keyframe. |
+| `Mapper.local_BA_increased_times_of_use` | int | 4 | Extra times-of-use boost during local BA. |
+| `Mapper.loop_closure_increased_times_of_use` | int | 8 | Extra times-of-use boost during loop closure. |
+| `Mapper.loop_closure_optimization_iterations` | int | 1000 | Training iterations after loop closure correction. |
+| `Mapper.loop_closure_memory_multiplier` | float | 8.0 | Memory expansion factor during loop closure (to hold extra chunks). |
+| `Mapper.auto_distribute_learning_rates` | bool | true | Auto-adjust LRs based on keyframe age. |
+
+### Gaussian Pyramid Parameters
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `GausPyramid.num_sub_levels` | int | 1 | Number of downsampled pyramid levels. |
+| `GausPyramid.factors` | float[] | [1.0, 0.5, 0.25] | Scale factors per pyramid level. |
+| `GausPyramid.times_of_use` | int[] | [8, 4, 2] | Training iterations per pyramid level. |
+
+### Pipeline Flags
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `Pipeline.convert_SHs` | bool | false | Convert spherical harmonics (unused: MLP predicts colors). |
+| `Pipeline.compute_cov3D` | bool | true | Build 3D covariance from scaling + rotation quaternion. |
+| `Pipeline.use_pose_optimization` | bool | false | Jointly optimize camera pose with Gaussian parameters. |
+| `Pipeline.use_exposure_optimization` | bool | false | Optimize per-frame affine exposure (brightness + contrast). |
+
 ---
 
 ## Chunk Binary Format (`.schun`)
@@ -436,10 +480,10 @@ The anchor threshold (120K for Jetson 8GB, 300K for desktop 12GB+) produces up t
 
 ## Limitations & Future Work
 
-1. **No loop closure yet** — the pose-graph + loop detection pipeline from Compact_GSSLAM (NetVLAD + GICP + 3DGS registration) and DiskChunGS (ORB-SLAM3 BA) can be integrated on top.
-2. **No real-time viewer** — the OpenGL ImGui viewer from DiskChunGS can be ported.
-3. **Depth estimators are placeholder** — `MonoDepthEstimator` and `StereoDepthEstimator` have stub implementations; TensorRT engine loading (DepthAnything) and real stereo matching (RAFT-Stereo) need to be wired in.
-4. **Mapper pipeline is scaffolding** — `ScaffoldMapper` provides the full SLAM pipeline skeleton (frame queue, keyframe decision, Gaussian seeding, local window BA, loop closure stub) but tracking and loop detection are not yet integrated with real SLAM frontends.
+1. **Loop closure uses basic BoVW** — the current k-means BoVW + PnP verification is functional but could be upgraded to learning-based descriptors (NetVLAD, DINOv2) for higher recall in challenging environments.
+2. **Viewer is point-cloud-only** — the GLFW+OpenGL+ImGui viewer renders frustums, keyframes, and Gaussian point clouds; splat-based rendering (using the CUDA rasterizer) for the viewer is planned.
+3. **MonoDepth requires TensorRT engine** — `MonoDepthEstimator` has the full TensorRT inference pipeline but needs a pre-compiled DepthAnything engine file; stereo SGBM is fully functional.
+4. **No multi-session map reuse** — chunk files (`.schun`) support disk persistence for out-of-core memory, but reloading a saved map for continued SLAM in a new session is not yet implemented.
 
 ---
 
