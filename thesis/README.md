@@ -19,7 +19,7 @@
 | 第一章 | 研究背景与意义、国内外研究现状（国外 3DGS-SLAM / 压缩与扩展 / 硬件加速，国内轻量化与工程化研究）、现有工作不足与本文定位 |
 | 第二章 | 3DGS 原理、Scaffold-GS 锚点表示、DiskChunGS 分块管理、视觉 SLAM 基础、锚点压缩与分块管理耦合可行性的五维理论推理（存储复杂度 / GPU 上界 / I/O 摊销 / 优化一致性 / 综合推论） |
 | 第三章（核心） | 系统设计与实现——10 大模块：锚点场景表示（初始化 / 增量 / MLP / 生长剪枝）、分块外存管理（编码 / LRU / 异步 I/O / .schun 格式）、双后端渲染与训练（视锥剔除 / INRIA CUDA + LibTorch 回退 / L1+SSIM+Depth+Isotropic / 调度器）、深度估计（SGBM 双目 + TensorRT 单目）、视觉跟踪（ORB+FLANN+PnP+RANSAC）、回环闭合（k-means BoVW+SE(3)）、SLAM 系统接口（SLAMSystemInterface + MappingOperation 队列）、两阶段 Mapper 管线（Phase 1 初始建图 + Phase 2 combineMappingOperations 分发）、实时可视化（GLFW+OpenGL+ImGui） |
-| 第四章 | 实验与分析：合成场景端到端验证、压缩效果定量分析（不同 K/D 的压缩-质量权衡）、分块 LRU 行为与 I/O 分析、消融实验设计（视角条件 / 特征维度 / 块大小）、KITTI 数据集评测方案（ATE/RPE/渲染/磁盘占用） |
+| 第四章 | 实验与分析：压缩效果定量分析（不同 K/D 的压缩-质量权衡）、分块 LRU 行为与 I/O 分析、消融实验设计（视角条件 / 特征维度 / 块大小）、KITTI 数据集评测方案（ATE/RPE/渲染/磁盘占用） |
 | 第五章 | 工作总结（4 项）与未来展望（7 项：光栅化器升级 / 回环升级 / 可视化 splat 渲染 / 优化器增量 / DepthLab / 真数评测 / 嵌入式适配） |
 
 ### 参考文献
@@ -77,7 +77,7 @@ thesis/
 │   ├── ch1-intro.tex            # 第一章 绪论（背景 / 国内外现状 / 研究内容 / 结构）
 │   ├── ch2-background.tex       # 第二章 相关技术基础（3DGS / Scaffold-GS / DiskChunGS / SLAM / 理论推理）
 │   ├── ch3-design.tex           # 第三章 系统设计与实现（10 模块详细设计 + 文件组织表）
-│   ├── ch4-experiments.tex      # 第四章 实验与分析（合成场景 / 压缩 / 内存 / 消融 / KITTI 方案）
+│   ├── ch4-experiments.tex      # 第四章 实验与分析（压缩 / 内存 / 消融 / KITTI 方案）
 │   └── ch5-summary.tex          # 第五章 总结与展望
 ├── figures/                     # 图片目录（系统架构图等）
 └── README.md
@@ -110,10 +110,9 @@ thesis/
 - [x] 将页眉中的姓名替换为 万文杰
 - [x] 在原创性声明中填入论文完整标题
 - [ ] 填写封面中培养单位、导师职称信息
-- [ ] 运行 demo 获取实验数据，填入第四章各表格（PSNR / SSIM / LPIPS / 显存 / 磁盘占用）
 - [ ] 绘制系统架构图 → `figures/architecture.pdf`
-- [ ] 插入渲染对比图（初始 vs 训练后）
 - [ ] 完成 KITTI 数据集评测（序列 00-08 训练 / 09-10 测试）并填入实验表格
+- [ ] 插入 KITTI 渲染对比图与轨迹对比图
 - [ ] 撰写致谢
 - [ ] 对照学校 Word 模板微调格式
 - [ ] 查重
