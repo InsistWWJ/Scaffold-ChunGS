@@ -4,7 +4,7 @@
 
 | 模块 | 来源 | 核心创新 |
 |-----------|--------|---------------|
-| **Anchor 场景表征** | [Compact_GSSLAM](https://github.com/dtc111111/Compact_GSSLAM) (IJCV 2025) | Scaffold-GS：体素化 anchor + MLP 解码子 Gaussian，内存压缩 5–10× |
+| **Anchor 场景表征** | [Scaffold-GS](https://github.com/city-super/Scaffold-GS) (CVPR 2024) + [Compact\_GSSLAM](https://github.com/dtc111111/Compact_GSSLAM) (IJCV 2025) | Scaffold-GS 提出体素化 anchor + MLP 解码子 Gaussian（存储压缩 5–10×）；Compact\_GSSLAM 将其适配至增量 SLAM（锚点生长/剪枝策略） |
 | **Chunk 分块内存管理** | [DiskChunGS](https://github.com/leggedrobotics/DiskChunGS) (IEEE RA-L 2026) | 空间分块 + LRU 换出到磁盘，支持任意大规模场景 |
 
 通过在统一的 C++/LibTorch 框架中结合上述技术，Scaffold-ChunGS 在**单位 GPU 显存内实现了比标准 3DGS 更高的重建密度**，同时通过外存分块 I/O 保持了**无限的场景可扩展性**。
