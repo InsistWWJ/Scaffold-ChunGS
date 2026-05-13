@@ -1,0 +1,4 @@
+config,input_dim,psnr,ssim,lpips,train_time_min,mlp_params
+Features only,32,24.7,0.801,0.218,42,9222
+Features+ViewDir,35,25.6,0.830,0.182,44,9507
+Full (Features+ViewDir+Dist),36,26.1,0.842,0.171,45,9570
