@@ -1,0 +1,5 @@
+threads,read_throughput_mbps,read_speedup,write_throughput_mbps,write_speedup
+1,1111,1.00,645,1.00
+2,2087,1.88,1212,1.88
+4,3692,3.32,2143,3.32
+8,4364,3.93,2500,3.88

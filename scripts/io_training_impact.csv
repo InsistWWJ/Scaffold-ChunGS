@@ -1,0 +1,5 @@
+scenario,mean_ms,p95_ms,p99_ms,max_ms
+no_io_baseline,108,135,152,178
+load_only,119,148,168,205
+evict_only,126,158,181,224
+load_and_evict,138,172,198,248
