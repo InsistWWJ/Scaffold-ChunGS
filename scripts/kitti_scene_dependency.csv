@@ -1,0 +1,5 @@
+scene_type,sequences,ATE_avg_m,PSNR_avg_dB,challenges
+urban_road,"00, 05",1.08,25.7,many_dynamic_objects_variable_lighting
+residential,"03, 04",0.64,26.8,narrow_roads_many_turns_small_scene
+rural_highway,"07, 09, 10",1.32,26.2,sparse_texture_few_far_features
+campus,08,1.45,25.5,many_loop_closures_complex_trajectory

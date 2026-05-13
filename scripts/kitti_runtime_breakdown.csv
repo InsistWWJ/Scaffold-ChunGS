@@ -1,0 +1,9 @@
+stage,Scaffold_ChunGS_ms,DiskChunGS_ms
+ORB_extraction,22,20
+FLANN_match_PnP,36,32
+MLP_decode,18,0
+rasterization,35,62
+loss_compute,12,14
+backward,33,32
+io_overhead_mean,12,18
+total_per_frame,168,178

@@ -1,0 +1,10 @@
+method,sequence,PSNR_dB,SSIM,LPIPS
+Scaffold_ChunGS,00,25.2,0.808,0.198
+Scaffold_ChunGS,05,26.1,0.842,0.171
+Scaffold_ChunGS,09,25.8,0.828,0.182
+Scaffold_ChunGS,10,26.0,0.835,0.178
+DiskChunGS,00,25.8,0.825,0.182
+DiskChunGS,05,26.6,0.851,0.163
+DiskChunGS,09,26.3,0.838,0.172
+DiskChunGS,10,26.5,0.843,0.166
+Compact_GSSLAM,05,25.4,0.828,0.189

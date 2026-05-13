@@ -1,0 +1,13 @@
+sequence,method,RPE_trans_m,RPE_rot_deg
+00,Scaffold_ChunGS,0.042,0.38
+00,DiskChunGS,0.028,0.25
+00,ORB_SLAM3,0.022,0.20
+05,Scaffold_ChunGS,0.031,0.28
+05,DiskChunGS,0.020,0.18
+05,ORB_SLAM3,0.016,0.14
+09,Scaffold_ChunGS,0.058,0.52
+09,DiskChunGS,0.045,0.42
+09,ORB_SLAM3,0.038,0.35
+10,Scaffold_ChunGS,0.038,0.33
+10,DiskChunGS,0.026,0.24
+10,ORB_SLAM3,0.020,0.18
