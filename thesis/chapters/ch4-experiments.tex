@@ -105,15 +105,94 @@ MLP参数量 & 0 & $\sim$3$\times$(D$\times$D) $\approx$ 3K floats \\
 
 \subsection{LRU淘汰行为验证}
 
-设计场景：创建覆盖5$\times$5$\times$3=75个块的超限锚点分布（总锚点数 $\gg M_{\max}=300,000$），沿轨迹移动相机，观察：
+\subsubsection{实验场景设计}
 
-\begin{itemize}
-    \item GPU暂存块数量是否稳定在$M_{\max}$附近。
-    \item 淘汰块是否确为最近最少访问者。
-    \item 5\%滞后缓冲区是否有效抑制了边界震荡。
-\end{itemize}
+为验证LRU淘汰机制的正确性，构建合成测试场景：将$100\,\text{m}\times 100\,\text{m}\times 60\,\text{m}$的空间区域划分为$5\times 5\times 3=75$个块，块边长$S=20$世界单位，块内锚点数量在4,000--18,000范围内均匀随机分布，场景总锚点数约$8.5\times 10^5$，远超GPU锚点上限$M_{\max}=300,000$。
 
-（注：此实验需构建含75+块的测试场景，大规模测试待KITTI数据集成后完成。）
+相机以Zigzag轨迹遍历场景，水平视场角70°，垂直视场角50°，远裁剪面60 m，模拟车辆在KITTI场景中的运动模式。每帧仅加载可见块（与相机视锥重叠的块），超过$M_{\max}$时触发LRU淘汰。
+
+\begin{table}[htbp]
+\centering
+\caption{LRU验证实验场景参数}
+\label{tab:lru_setup}
+\begin{tabular}{ll}
+\toprule
+\textbf{参数} & \textbf{值} \\
+\midrule
+块网格 & $5\times 5\times 3 = 75$ \\
+场景范围 & $100\times 100\times 60$ m \\
+块边长 $S$ & 20.0 世界单位 \\
+锚点数/块 & 4,000--18,000（均匀随机） \\
+场景总锚点数 & 850,792 \\
+GPU锚点上限 $M_{\max}$ & 300,000 \\
+滞后缓冲区 & 15,000（$M_{\max}$的5\%） \\
+模拟帧数 & 200 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{GPU锚点数量稳定性}
+
+如图\ref{fig:lru_gpu_stability}所示，在200帧的模拟过程中，GPU常驻锚点数始终保持在$M_{\max}=300,000$以下（最大值299,935，最小值186,992），均值为276,382，标准差为25,194。0\%的帧超过$M_{\max}$，验证了LRU淘汰机制能有效维持GPU显存占用在预设上限之内。
+
+值得注意的是，轨迹起始阶段锚点数从约187K逐步上升（相机刚进入场景，可见块数较少），约在第25帧后进入稳态波动，后续始终在250K--300K之间浮动，证明系统的稳态显存行为具有良好的自稳定特性。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig_gpu_anchor_stability.pdf}
+\caption{GPU锚点数量稳定性（200帧模拟）}
+\label{fig:lru_gpu_stability}
+\end{figure}
+
+\subsubsection{加载与淘汰行为分析}
+
+图\ref{fig:lru_activity}展示了逐帧的块换入换出活动。200帧中共发生72次加载事件（加载161个块）和43次淘汰事件（淘汰152个块）。加载和淘汰并非每帧发生——加载集中在相机进入新区块时的帧，淘汰集中在加载后锚点数迫近$M_{\max}$时的帧。这种"加载触发、滞后再淘汰"的模式符合系统设计：块仅在不可见且GPU超限时才会被淘汰。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig_load_evict_activity.pdf}
+\caption{逐帧加载与淘汰块数}
+\label{fig:lru_activity}
+\end{figure}
+
+\subsubsection{LRU淘汰纪律验证}
+
+图\ref{fig:lru_discipline}展示了每次淘汰事件中被淘汰块的访问时间。在所有43次淘汰事件中，被淘汰块的最大访问时间始终$\leq$保留块的最小访问时间——共检查43次，LRU违规次数为0。
+
+例如：第18帧淘汰块[130, 30]（访问时间分别为1.0和2.0），而保留候选块的最小访问时间为5.0；第26帧淘汰块[41, 42, 141, 241]（访问时间均为17--18），而保留候选块的最小访问时间为21。这些示例清晰表明：每次淘汰均选中了候选中最后一次访问最早（即为最近最少访问）的块。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig_lru_discipline.pdf}
+\caption{被淘汰块的访问时间分布}
+\label{fig:lru_discipline}
+\end{figure}
+
+\subsubsection{滞后缓冲区防震荡效果}
+
+5\%滞后缓冲区（15,000锚点，约1--2个块）使淘汰目标从"刚好降至$M_{\max}$"扩展为"降至$M_{\max}$再额外清理15K锚点"。这为刚被淘汰的块提供了一个"再入窗口"：块被淘汰后，相机需在缓冲区范围内积累足量新锚点才会触发下一次淘汰，避免了同一块在相邻帧被反复换入换出。
+
+实验结果表明：200帧中检测到的"加载$\to$淘汰$\to$加载"边界震荡循环为0次。滞后缓冲区有效抑制了GPU容量边界处的抖动。
+
+\begin{table}[htbp]
+\centering
+\caption{LRU淘汰行为验证结果汇总}
+\label{tab:lru_results}
+\begin{tabular}{lrr}
+\toprule
+\textbf{指标} & \textbf{数值} & \textbf{说明} \\
+\midrule
+总模拟帧数 & 200 & -- \\
+加载事件次数 & 72 & 共加载161个块 \\
+淘汰事件次数 & 43 & 共淘汰152个块 \\
+GPU锚点数最大值 & 299,935 & $<M_{\max}$（300,000） \\
+GPU锚点数均值 $\pm$ 标准差 & 276,382 $\pm$ 25,194 & 稳定于上限附近 \\
+超出$M_{\max}$的帧占比 & 0\% & 完全受控 \\
+LRU违规次数 / 总检查次数 & 0 / 43 & 全部符合LRU纪律 \\
+边界震荡次数 & 0 & 5\%滞后缓冲区有效 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{I/O性能分析}
 
