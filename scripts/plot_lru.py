@@ -26,7 +26,7 @@ plt.rcParams.update({
 })
 
 SCRIPT_DIR = Path(__file__).parent
-OUT_DIR = SCRIPT_DIR / "figures"
+OUT_DIR = SCRIPT_DIR.parent / "thesis" / "figures"
 OUT_DIR.mkdir(exist_ok=True)
 
 MAX_ANCHORS = 300_000
