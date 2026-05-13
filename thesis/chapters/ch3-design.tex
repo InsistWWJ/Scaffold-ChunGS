@@ -19,13 +19,13 @@
 \vspace{6pt}
 \textbf{Sensor Data (Mono / Stereo / RGB-D)} \\
 $\downarrow$ \\
-\textbf{SLAMSystemInterface}（\texttt{trackMono/Stereo/RGBD}）\\
+\textbf{SLAMSystemInterface}（trackMono/Stereo/RGBD）\\
 $\downarrow$ \\
 \textbf{MappingOperation Queue}（LocalBA / LoopBA / ScaleRefinement）\\
 $\downarrow$ \\
 \textbf{ScaffoldMapper -- Two-Phase Loop} \\
 \qquad Phase 1: 积累 KFs $\to$ 批量种子 $\to$ 初训 \\
-\qquad Phase 2: \texttt{combineMappingOperations()} $\to$ 分发调度 \\
+\qquad Phase 2: combineMappingOperations() $\to$ 分发调度 \\
 $\downarrow$ \\
 \textbf{DepthEstimator}（SGBM 双目 / TensorRT 单目）$\to$ \textbf{GaussianKeyframe} \\
 $\downarrow$ \\
@@ -88,11 +88,11 @@ SLAM Mapper & 两阶段DiskChunGS对齐管线 & LibTorch, STL threading \\
 
 \subsection{体素化锚点初始化}
 
-锚点初始化的入口为`GaussianModel::initializeFromPoints`（实现于\verb|src/model/model_core.cpp|）。算法流程如下：
+锚点初始化的入口为`GaussianModel::initializeFromPoints`（实现于src/model/model\_core.cpp）。算法流程如下：
 
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
     \item \textbf{输入：}稠密点云$\mathcal{P}=\{(\mathbf{p}_j,\mathbf{c}_j)\}_{j=1}^{M}$（来自RGB-D初始帧或SFM前端）。
-    \item 以 \texttt{voxel\_size}（典型值0.01 m）为步长对$\mathcal{P}$进行均匀体素化。
+    \item 以 voxel\_size（典型值0.01 m）为步长对$\mathcal{P}$进行均匀体素化。
     \item 对每个非空体素，计算该体素内所有点的平均颜色$\bar{\mathbf{c}}$。
     \item \textbf{创建锚点：}
         \begin{itemize}
@@ -101,24 +101,24 @@ SLAM Mapper & 两阶段DiskChunGS对齐管线 & LibTorch, STL threading \\
             \item $\mathbf{o}_i^k\leftarrow$ 随机初始化$K=5$个子偏移
             \item $\mathbf{s}_i^a\leftarrow[0.01,0.01,0.01,\,s_v,s_v,s_v]$（前半控制offset范围，后半控制子高斯初始尺度$s_v$=体素尺寸）
         \end{itemize}
-    \item 所有锚点参数存储为扁平GPU张量（\verb|torch::Tensor|），索引统一的锚点id。
+    \item 所有锚点参数存储为扁平GPU张量（torch::Tensor），索引统一的锚点id。
 \end{enumerate}
 
 \textbf{设计决策：}采用体素中心而非原始点位置作为锚点坐标，确保锚点在空间上的均匀覆盖，避免在点云稀疏区域出现空洞。
 
 \subsection{增量锚点添加}
 
-在SLAM运行过程中，新观测到的区域产生新点云时，调用`GaussianModel::addAnchors`（\verb|model_core.cpp|）增量添加锚点：
+在SLAM运行过程中，新观测到的区域产生新点云时，调用`GaussianModel::addAnchors`（model\_core.cpp）增量添加锚点：
 
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
     \item 将新点云体素化，筛选出未覆盖的体素。
-    \item 以现有锚点位置为基准，执行半径过滤（radius-based duplicate filtering）：若新体素中心与任一现有锚点的距离小于 \texttt{voxel\_size / 2}，则跳过。
+    \item 以现有锚点位置为基准，执行半径过滤（radius-based duplicate filtering）：若新体素中心与任一现有锚点的距离小于 voxel\_size / 2，则跳过。
     \item 对通过筛选的新锚点，分配全局唯一递增ID，追加至各参数张量的末尾。
 \end{enumerate}
 
 \subsection{视角条件MLP解码器}
 
-MLP解码器是锚点压缩的核心组件（实现于\verb|src/model/model_mlp.cpp|，类定义于\verb|include/scaffold_chunks/anchor_mlp.h|）。三个独立MLP的输入$\mathbf{z}$完全相同：
+MLP解码器是锚点压缩的核心组件（实现于src/model/model\_mlp.cpp，类定义于include/scaffold\_chunks/anchor\_mlp.h）。三个独立MLP的输入$\mathbf{z}$完全相同：
 
 \begin{equation}
 \mathbf{z} = [\,\mathbf{f}_i^a\,|\,\mathbf{d}_{\text{view}}\,|\,\|\mathbf{x}_i^a - \mathbf{c}\|\,]
@@ -129,39 +129,39 @@ MLP解码器是锚点压缩的核心组件（实现于\verb|src/model/model_mlp.
 \textbf{MLP结构：}
 
 \begin{itemize}
-    \item \textbf{\texttt{mlp\_opacity\_}}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{K}\to\operatorname{Tanh}$。输出$K$个tanh值，经sigmoid转换后作为$K$个子高斯的不透明度。
-    \item \textbf{\texttt{mlp\_cov\_}}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{7K}$。输出$K$组$(\Delta s_x,\Delta s_y,\Delta s_z,\,q_w,q_x,q_y,q_z)$——3个尺度残差（与基础尺度相加）及4个旋转四元数分量（归一化后形成单位四元数）。
-    \item \textbf{\texttt{mlp\_color\_}}：$\mathbb{R}^{D+3+1+A}\to\mathbb{R}^{D}\to\mathbb{R}^{3K}\to\operatorname{Sigmoid}$。若配置了外观嵌入维度$A>0$，则将每相机的外观嵌入向量拼接至输入。
+    \item \textbf{mlp\_opacity\_}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{K}\to\operatorname{Tanh}$。输出$K$个tanh值，经sigmoid转换后作为$K$个子高斯的不透明度。
+    \item \textbf{mlp\_cov\_}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{7K}$。输出$K$组$(\Delta s_x,\Delta s_y,\Delta s_z,\,q_w,q_x,q_y,q_z)$——3个尺度残差（与基础尺度相加）及4个旋转四元数分量（归一化后形成单位四元数）。
+    \item \textbf{mlp\_color\_}：$\mathbb{R}^{D+3+1+A}\to\mathbb{R}^{D}\to\mathbb{R}^{3K}\to\operatorname{Sigmoid}$。若配置了外观嵌入维度$A>0$，则将每相机的外观嵌入向量拼接至输入。
 \end{itemize}
 
-\textbf{可选组件 —— \texttt{mlp\_feature\_bank\_}：}当 \texttt{use\_feat\_bank} 开启时，对锚点特征进行3分辨率注意力融合\cite{lu2024scaffoldgs}，提升视角适应能力。该功能默认关闭以控制参数总量。
+\textbf{可选组件 —— mlp\_feature\_bank\_：}当 use\_feat\_bank 开启时，对锚点特征进行3分辨率注意力融合\cite{lu2024scaffoldgs}，提升视角适应能力。该功能默认关闭以控制参数总量。
 
 \textbf{AnchorMLP::expandAnchorsToGaussians} 方法的处理流程：
 
-\begin{verbatim}
-1. 输入: 可见锚点子集 [V, D] + 相机中心 c
-2. 计算视线方向 d_view = normalize(x_a - c)
-3. 计算逐锚点距离 d_dist = ||x_a - c||
-4. 拼接输入 z = [f_a | d_view | d_dist]  → [V, D+4]
-5. opacity_raw = mlp_opacity_(z)         → [V, K]
-6. cov_raw = mlp_cov_(z)                  → [V, K*7]
-7. color_raw = mlp_color_(z)              → [V, K*3]
-8. 计算子高斯位置: x_child = x_a + o_k * s_a[:3]
-9. 应用激活函数(opacity→sigmoid, scale→sigmoid, rot→normalize)
-10. 生成 child_mask: opacity > 0 的子高斯
-11. 返回 ExpandedGaussians{xyz, color, opacity, scaling, rotation, mask}
-\end{verbatim}
+\begin{enumerate}[label=\arabic*.,leftmargin=2em,itemsep=0pt,topsep=0pt]
+    \item 输入：可见锚点子集 $[V, D]$ + 相机中心 $\mathbf{c}$
+    \item 计算视线方向 $\mathbf{d}_{\text{view}} = \operatorname{normalize}(\mathbf{x}_a - \mathbf{c})$
+    \item 计算逐锚点距离 $d_{\text{dist}} = \|\mathbf{x}_a - \mathbf{c}\|$
+    \item 拼接输入 $\mathbf{z} = [\mathbf{f}_a \mid \mathbf{d}_{\text{view}} \mid d_{\text{dist}}] \rightarrow [V, D+4]$
+    \item $\text{opacity\_raw} = \text{mlp\_opacity\_}(\mathbf{z}) \rightarrow [V, K]$
+    \item $\text{cov\_raw} = \text{mlp\_cov\_}(\mathbf{z}) \rightarrow [V, K{\times}7]$
+    \item $\text{color\_raw} = \text{mlp\_color\_}(\mathbf{z}) \rightarrow [V, K{\times}3]$
+    \item 计算子高斯位置：$\mathbf{x}_i^k = \mathbf{x}_i^a + \mathbf{o}_i^k \cdot \mathbf{s}_i^a[:3]$
+    \item 应用激活函数：opacity $\rightarrow$ sigmoid，scale $\rightarrow$ sigmoid，rot $\rightarrow$ normalize
+    \item 生成 $\text{child\_mask}$：$\text{opacity} > 0$ 的子高斯
+    \item 返回 $\text{ExpandedGaussians\{xyz, color, opacity, scaling, rotation, mask\}}$
+\end{enumerate}
 
 \subsection{层级化锚点生长与剪枝}
 
-锚点生长与剪枝实现于\verb|src/model/model_optimization.cpp|。
+锚点生长与剪枝实现于src/model/model\_optimization.cpp。
 
 \textbf{生长流程（`anchorGrowing`）：}
 
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
     \item 统计每个锚点子偏移的累积梯度$\sum\|\nabla_{\mathbf{o}_i^k}\|$。
     \item 对梯度超过$\tau_{\text{grad}}=2\times10^{-4}$的锚点，以其高梯度子偏移位置为种子。
-    \item 对种子进行 \texttt{update\_depth}=3 层级的体素细分：
+    \item 对种子进行 update\_depth=3 层级的体素细分：
         \begin{itemize}
             \item 第0层：体素尺寸$v_s\times\text{update\_init\_factor}=v_s\times100$
             \item 第$l$层：体素尺寸缩小$\text{update\_hierarchy\_factor}=4$倍
@@ -177,7 +177,7 @@ MLP解码器是锚点压缩的核心组件（实现于\verb|src/model/model_mlp.
 
 \subsection{空间分块与编码}
 
-块的坐标系定义于\verb|include/scaffold_chunks/chunk_types.h|。
+块的坐标系定义于include/scaffold\_chunks/chunk\_types.h。
 
 \textbf{块坐标计算：}
 \begin{equation}
@@ -196,28 +196,30 @@ c_i = \left\lfloor\frac{x_i}{S_{\text{chunk}}}\right\rfloor,\quad i\in\{x,y,z\}
 
 \subsection{LRU淘汰策略}
 
-LRU管理器实现于\verb|src/model/model_memory.cpp|。
+LRU管理器实现于src/model/model\_memory.cpp。
 
 \textbf{核心数据结构：}
 \begin{itemize}
-    \item \verb|chunks_loaded_from_disk_|：GPU暂存中已加载的块ID张量
-    \item \verb|chunks_on_disk_|：已写至磁盘的块ID张量
-    \item \verb|chunk_access_times_|：\verb|std::unordered_map<int64_t, time_point>|，记录每块的最近访问时刻
+    \item chunks\_loaded\_from\_disk\_：GPU暂存中已加载的块ID张量
+    \item chunks\_on\_disk\_：已写至磁盘的块ID张量
+    \item chunk\_access\_times\_：std::unordered\_map<int64\_t, time\_point>，记录每块的最近访问时刻
 \end{itemize}
 
 \textbf{淘汰流程（`evictExcessChunks`）：}
 
-\begin{verbatim}
-1. protected_ids = 当前帧可见的块ID
-2. excess = 当前GPU锚点数 - max_anchors_in_memory
-3. if excess <= 0: return
-4. candidates = loaded_chunks \ protected_ids  // 非可见且已加载的块
-5. 按 chunk_access_times_ 升序排序 candidates
-6. 选前 N_evict 个块，其中 N_evict = excess + 5% * max_anchors_in_memory
-7. 对每个选中块：
-   a. saveAndEvictChunk(id):  序列化写入磁盘 + 从GPU张量中移除
-   b. 更新 chunks_loaded_from_disk_ / chunks_on_disk_ / chunk_anchor_counts_
-\end{verbatim}
+\begin{enumerate}[label=\arabic*.,leftmargin=2em,itemsep=0pt,topsep=0pt]
+    \item $\text{protected\_ids} \leftarrow$ 当前帧可见的块ID
+    \item $\text{excess} = \text{当前GPU锚点数} - \text{max\_anchors\_in\_memory}$
+    \item if $\text{excess} \le 0$：return
+    \item $\text{candidates} = \text{loaded\_chunks} \setminus \text{protected\_ids}$ \hfill // 非可见且已加载的块
+    \item 按 $\text{chunk\_access\_times\_}$ 升序排序 $\text{candidates}$
+    \item 选前 $N_{\text{evict}}$ 个块，其中 $N_{\text{evict}} = \text{excess} + 5\% \times \text{max\_anchors\_in\_memory}$
+    \item 对每个选中块：
+    \begin{enumerate}[label=\alph*.,leftmargin=3em,itemsep=0pt,topsep=0pt]
+        \item $\text{saveAndEvictChunk(id)}$：序列化写入磁盘 + 从GPU张量中移除
+        \item 更新 $\text{chunks\_loaded\_from\_disk\_} \;/\; \text{chunks\_on\_disk\_} \;/\; \text{chunk\_anchor\_counts\_}$
+    \end{enumerate}
+\end{enumerate}
 
 \textbf{5\%滞后缓冲区设计：}避免在边界情况下频繁的"淘汰$\to$立即重新加载"震荡。当GPU锚点数降至$0.95\times M_{\max}$以下时，停止额外淘汰。
 
@@ -236,7 +238,7 @@ LRU管理器实现于\verb|src/model/model_memory.cpp|。
 
 \subsection{二进制块格式（.schun）}
 
-\schun 文件格式的序列化/反序列化实现于\verb|src/model/model_storage.cpp|。每个块文件自包含构建该块所需的所有参数与优化器状态，支持训练的暂停与恢复。
+\schun 文件格式的序列化/反序列化实现于src/model/model\_storage.cpp。每个块文件自包含构建该块所需的所有参数与优化器状态，支持训练的暂停与恢复。
 
 表\ref{tab:schun_format}给出了\schun 文件的完整布局。
 
@@ -253,7 +255,7 @@ LRU管理器实现于\verb|src/model/model_memory.cpp|。
 8  & 8  & Chunk ID（int64编码） \\
 16 & 4  & 锚点数量（uint32） \\
 20 & -- & 锚点参数张量（13个）：\\
-   &    & \quad \texttt{TensorHeader} + raw data for each: \\
+   &    & \quad TensorHeader + raw data for each: \\
    &    & \quad anchor\_, offset\_, anchor\_feat\_, anchor\_scaling\_,\\
    &    & \quad anchor\_rotation\_, anchor\_opacity\_, exist\_since\_,\\
    &    & \quad anchor\_chunk\_ids\_, anchor\_ids\_, offset\_gradient\_accum\_,\\
@@ -266,13 +268,13 @@ LRU管理器实现于\verb|src/model/model_memory.cpp|。
 
 每个`TensorHeader`包含维度数、各维度大小、数据类型及数据字节数，确保跨平台兼容性。
 
-文件命名规则：\verb|p<n>_p<n>_p<n>.schun|（例如\verb|p2_n5_p0.schun|表示$(c_x=2,c_y=-5,c_z=0)$的块）。
+文件命名规则：p<n>\_p<n>\_p<n>.schun（例如p2\_n5\_p0.schun表示$(c_x=2,c_y=-5,c_z=0)$的块）。
 
 \section{渲染与训练模块}
 
 \subsection{两级视锥剔除}
 
-视锥剔除实现于\verb|src/rendering/frustum_culler.cpp|，采用两级过滤：
+视锥剔除实现于src/rendering/frustum\_culler.cpp，采用两级过滤：
 
 \textbf{第一级 -- 块级AABB测试：}
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
@@ -293,45 +295,48 @@ LRU管理器实现于\verb|src/model/model_memory.cpp|。
 
 \subsection{双后端可微光栅化}
 
-光栅化器实现于\verb|src/rendering/gaussian_renderer.cpp|。系统采用双后端设计，通过编译期宏\verb|HAVE_CUDA_RASTERIZER|在两种渲染后端之间自动切换。
+光栅化器实现于src/rendering/gaussian\_renderer.cpp。系统采用双后端设计，通过编译期宏HAVE\_CUDA\_RASTERIZER在两种渲染后端之间自动切换。
 
 \textbf{渲染管线（`ScaffoldRenderer::render`）：}
 
-\begin{verbatim}
-1. sliced_anchors = model.getVisibleAnchors(visible_mask)  // 切片可见锚点
-2. expanded = model.mlp().expandAnchorsToGaussians(...)    // MLP展开
-3. active = expanded.child_mask                          // 滤除不透明度≤0的子高斯
-4. #ifdef HAVE_CUDA_RASTERIZER
-   rgb, depth = RasterizeGaussians(                      // INRIA CUDA光栅化
-       xyz[active], color[active], opacity[active],
-       scaling[active], rotation[active],
-       w2v, proj, FoVx, FoVy, H, W, bg)
-   #else
-   rgb, depth = renderGaussiansGPU(                      // 纯LibTorch回退
-       xyz[active], color[active], opacity[active],
-       scaling[active], rotation[active],
-       w2v, proj, FoVx, FoVy, H, W, bg)
-   #endif
-\end{verbatim}
+\begin{enumerate}[label=\arabic*.,leftmargin=2em,itemsep=0pt,topsep=0pt]
+    \item $\text{sliced\_anchors} = \text{model.getVisibleAnchors(visible\_mask)}$ \hfill // 切片可见锚点
+    \item $\text{expanded} = \text{model.mlp().expandAnchorsToGaussians(...)}$ \qquad // MLP展开
+    \item $\text{active} = \text{expanded.child\_mask}$ \hfill // 滤除不透明度 $\le 0$ 的子高斯
+    \item 若 $\text{HAVE\_CUDA\_RASTERIZER}$ 已定义（INRIA CUDA光栅化）：
+    \begin{quote}
+        $\text{rgb, depth} = \text{RasterizeGaussians(}$\\
+        $\quad\text{xyz[active], color[active], opacity[active],}$\\
+        $\quad\text{scaling[active], rotation[active],}$\\
+        $\quad\text{w2v, proj, FoVx, FoVy, H, W, bg)}$
+    \end{quote}
+    \item 否则（纯LibTorch回退）：
+    \begin{quote}
+        $\text{rgb, depth} = \text{renderGaussiansGPU(}$\\
+        $\quad\text{xyz[active], color[active], opacity[active],}$\\
+        $\quad\text{scaling[active], rotation[active],}$\\
+        $\quad\text{w2v, proj, FoVx, FoVy, H, W, bg)}$
+    \end{quote}
+\end{enumerate}
 
 \textbf{后端一 —— INRIA CUDA光栅化器：}
-当CMake在\verb|third_party/diff_gaussian_rasterization|检测到子模块时，启用\verb|HAVE_CUDA_RASTERIZER|宏，链接INRIA开源的tile-based可微高斯光栅化器。该后端实现了完整的3DGS渲染管线——将3D高斯经视图-投影矩阵变换后，基于tile排序进行精确的$\alpha$混合，渲染质量与原始3DGS论文一致。该子模块锁定在commit \verb|59f5f77|（2023年8月，代码冻结），由CMake直接编译其CUDA源文件（\verb|cuda_rasterizer/*.cu|）。
+当CMake在third\_party/diff\_gaussian\_rasterization检测到子模块时，启用HAVE\_CUDA\_RASTERIZER宏，链接INRIA开源的tile-based可微高斯光栅化器。该后端实现了完整的3DGS渲染管线——将3D高斯经视图-投影矩阵变换后，基于tile排序进行精确的$\alpha$混合，渲染质量与原始3DGS论文一致。该子模块锁定在commit 59f5f77（2023年8月，代码冻结），由CMake直接编译其CUDA源文件（cuda\_rasterizer/*.cu）。
 
 \textbf{后端二 —— 纯LibTorch GPU回退：}
 当CUDA光栅化器不可用时，系统使用完全构建于LibTorch张量算子的GPU渲染器。该回退方案的核心流程为：
 
 \begin{enumerate}
     \item \textbf{批量投影：}将所有3D点通过世界-视图-投影矩阵一次性变换至裁剪空间，再归一化至NDC空间与像素坐标。
-    \item \textbf{视口过滤：}以GPU布尔掩码向量化过滤超出图像边界、相机后方及深度范围外的点，零CPU同步（仅\verb|.any().item<bool>()|一次性判空）。
+    \item \textbf{视口过滤：}以GPU布尔掩码向量化过滤超出图像边界、相机后方及深度范围外的点，零CPU同步（仅.any().item<bool>()一次性判空）。
     \item \textbf{屏幕半径估算：}使用$r \approx f \cdot \bar{s} / z_w$近似计算每个高斯的投影屏幕半径（$f$为焦距，$\bar{s}$为平均尺度）。
-    \item \textbf{深度排序与$\alpha$合成：}按像素平坦化索引排序高斯贡献后，使用\verb|torch::cumprod|计算透射率乘积，通过\verb|scatter_add|逐像素累加加权颜色，实现前至后的$\alpha$混合。
+    \item \textbf{深度排序与$\alpha$合成：}按像素平坦化索引排序高斯贡献后，使用torch::cumprod计算透射率乘积，通过scatter\_add逐像素累加加权颜色，实现前至后的$\alpha$混合。
 \end{enumerate}
 
 该回退方案所有操作均在GPU上执行，唯一的同步点为渲染前的空帧判出，在功能上完整支持开发与验证场景。但与INRIA原始tile排序实现相比，在排序精度、混合准确度和渲染效率方面存在一定差距，因此生产部署建议启用CUDA光栅化器后端。
 
 \subsection{损失函数设计}
 
-损失函数实现于\verb|src/training/losses.cpp|，由四项加权组合：
+损失函数实现于src/training/losses.cpp，由四项加权组合：
 
 \begin{equation}
 \mathcal{L} = \mathcal{L}_1 + \lambda_{\text{SSIM}}\,\mathcal{L}_{\text{SSIM}}
@@ -348,7 +353,7 @@ LRU管理器实现于\verb|src/model/model_memory.cpp|。
 \begin{equation}
 \mathcal{L}_{\text{SSIM}} = 1 - \operatorname{SSIM}(\hat{C},\,C_{\text{gt}})
 \end{equation}
-使用基于高斯加窗的卷积实现结构相似度（SSIM）度量\cite{wang2004ssim}。权重$\lambda_{\text{SSIM}}=0.2$。
+使用基于高斯加窗的卷积实现结构相 似度（SSIM）度量\cite{wang2004ssim}。权重$\lambda_{\text{SSIM}}=0.2$。
 
 \textbf{深度L1损失：}
 \begin{equation}
@@ -364,26 +369,28 @@ LRU管理器实现于\verb|src/model/model_memory.cpp|。
 
 \subsection{训练调度器}
 
-训练调度器`ScaffoldTrainer`实现于\verb|src/training/trainer.cpp|，通过OpenCV FileStorage解析YAML配置文件（\verb|cfg/gaussian_mapper/scaffold_chunks.yaml|）。
+训练调度器`ScaffoldTrainer`实现于src/training/trainer.cpp，通过OpenCV FileStorage解析YAML配置文件（cfg/gaussian\_mapper/scaffold\_chunks.yaml）。
 
 \textbf{初始化：}将配置参数映射至五组C++结构体（`AnchorModelConfig`、`ChunkConfig`、`OptimizationConfig`、`CameraConfig`、`KeyframeConfig`）。
 
 \textbf{训练循环（`trainOneIteration`）：}
 
-\begin{verbatim}
-1. kf = keyframe_selector->getNextKeyframe()        // 基于损失加权采样
-2. 计算 WVP 矩阵 + 相机中心
-3. vis_mask = model->cullVisibleAnchors(...)         // 两级剔除 + 块管理
-4. if vis_mask.sum() == 0: skip iteration
-5. output = ScaffoldRenderer::render(...)            // MLP展开 + CUDA光栅化
-6. loss = computeAllLosses(output, kf->GT, weights)  // L1 + SSIM + Depth + Iso
-7. loss.backward()                                   // 反向传播
-8. model->optimizerStep(visibility, N_visible)       // Adam更新
-9. model->optimizerZeroGrad()                        // 梯度清零
-10. if iter % densify_interval == 0:                 // 定期稠密化
-        model->adjustAnchors(...)
-        model->trainingSetup(opt_cfg)                // 重建优化器
-\end{verbatim}
+\begin{enumerate}[label=\arabic*.,leftmargin=2em,itemsep=0pt,topsep=0pt]
+    \item $\text{kf} = \text{keyframe\_selector->getNextKeyframe()}$ \hfill // 基于损失加权采样
+    \item 计算 WVP 矩阵 + 相机中心
+    \item $\text{vis\_mask} = \text{model->cullVisibleAnchors(...)}$ \hfill // 两级剔除 + 块管理
+    \item if $\text{vis\_mask.sum()} = 0$：skip iteration
+    \item $\text{output} = \text{ScaffoldRenderer::render(...)}$ \hfill // MLP展开 + CUDA光栅化
+    \item $\text{loss} = \text{computeAllLosses(output, kf->GT, weights)}$ \quad // L1 + SSIM + Depth + Iso
+    \item $\text{loss.backward()}$ \hfill // 反向传播
+    \item $\text{model->optimizerStep(visibility, N\_visible)}$ \hfill // Adam更新
+    \item $\text{model->optimizerZeroGrad()}$ \hfill // 梯度清零
+    \item if $\text{iter} \;\%\; \text{densify\_interval} = 0$：\hfill // 定期稠密化
+    \begin{quote}
+        $\text{model->adjustAnchors(...)}$\\
+        $\text{model->trainingSetup(opt\_cfg)}$ \hfill // 重建优化器
+    \end{quote}
+\end{enumerate}
 
 \textbf{关键帧采样器（`KeyframeSelection`）：}维护每帧的指数移动平均损失$\bar{\ell}_f$与被采样次数$u_f$，以概率：
 \begin{equation}
@@ -416,28 +423,28 @@ MLP权重（颜色） & 0.0025 & -- \\
 
 \subsection{深度估计模块}
 
-深度估计模块实现于\verb|src/depth/depth_estimator.cpp|（接口定义于\verb|include/scaffold_chunks/depth_estimator.h|），为系统提供统一的深度估计抽象层，支持两种深度源。
+深度估计模块实现于src/depth/depth\_estimator.cpp（接口定义于include/scaffold\_chunks/depth\_estimator.h），为系统提供统一的深度估计抽象层，支持两种深度源。
 
 \textbf{单目深度估计（MonoDepthEstimator）：}
 \begin{itemize}
     \item 设计为加载TensorRT推理引擎（如DepthAnything模型），接受RGB图像并输出稠密深度图。
-    \item 通过\verb|initialize(engine_path)|加载TensorRT引擎并创建推理上下文。
+    \item 通过initialize(engine\_path)加载TensorRT引擎并创建推理上下文。
     \item 完整的TensorRT推理管线已实现，生产环境中需配合预编译的DepthAnything引擎文件使用。
 \end{itemize}
 
 \textbf{双目深度估计（StereoDepthEstimator）：}
 \begin{itemize}
-    \item 基于OpenCV的\verb|cv::StereoSGBM|实现，执行半全局块匹配（Semi-Global Block Matching）立体匹配。
+    \item 基于OpenCV的cv::StereoSGBM实现，执行半全局块匹配（Semi-Global Block Matching）立体匹配。
     \item 深度计算：$d = b\cdot f_x / \delta$，其中$b$为基线长，$f_x$为焦距，$\delta$为视差值。
     \item 支持左右一致性检查（LR consistency check）以过滤遮挡区域的不可靠深度值，输出逐像素置信度掩码。
     \item 默认参数：基线0.12 m，焦距500像素，SGBM块大小5$\times$5，最小视差0，最大视差128。
 \end{itemize}
 
-\textbf{工厂函数：}\verb|createDepthEstimator(DepthSource, model_path)|根据枚举类型自动构建对应的深度估计器实例，便于系统在单目与双目模式间切换。
+\textbf{工厂函数：}createDepthEstimator(DepthSource, model\_path)根据枚举类型自动构建对应的深度估计器实例，便于系统在单目与双目模式间切换。
 
 \subsection{SLAM前端——视觉跟踪}
 
-视觉跟踪模块实现于\verb|src/slam/tracking.cpp|（接口定义于\verb|include/scaffold_chunks/tracking.h|），提供帧间位姿估计的核心功能。
+视觉跟踪模块实现于src/slam/tracking.cpp（接口定义于include/scaffold\_chunks/tracking.h），提供帧间位姿估计的核心功能。
 
 \textbf{ORB特征提取与匹配：}
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
@@ -457,7 +464,7 @@ MLP权重（颜色） & 0.0025 & -- \\
 
 \subsection{SLAM前端——回环闭合}
 
-回环闭合模块实现于\verb|src/slam/loop_closing.cpp|（接口定义于\verb|include/scaffold_chunks/loop_closing.h|），负责检测并修正长期累积漂移。
+回环闭合模块实现于src/slam/loop\_closing.cpp（接口定义于include/scaffold\_chunks/loop\_closing.h），负责检测并修正长期累积漂移。
 
 \textbf{场景识别（Place Recognition）：}
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
@@ -474,54 +481,54 @@ MLP权重（颜色） & 0.0025 & -- \\
     \item 将优化后的位姿变换应用于受影响的子高斯位置，确保场景几何的一致性。
 \end{enumerate}
 
-\textbf{与Mapper的协作：}回环检测在\verb|BuiltinSLAMAdapter::detectAndEnqueueLoop|中触发，通过\verb|MappingOperation(OprType::LoopClosingBA)|进入Mapper的\verb|combineMappingOperations|队列。处理回环时Mapper暂停帧接收（\verb|pause_frame_ingestion_ = true|），完成\verb|loop_closure_optimization_iterations|（默认1000次）次额外训练迭代后恢复。
+\textbf{与Mapper的协作：}回环检测在BuiltinSLAMAdapter::detectAndEnqueueLoop中触发，通过MappingOperation(OprType::LoopClosingBA)进入Mapper的combineMappingOperations队列。处理回环时Mapper暂停帧接收（pause\_frame\_ingestion\_ = true），完成loop\_closure\_optimization\_iterations（默认1000次）次额外训练迭代后恢复。
 
 \subsection{SLAM系统接口层}
 
-SLAM系统接口层实现于\verb|include/scaffold_chunks/slam_system.h|和\verb|src/slam/builtin_adapter.cpp|，是连接SLAM前端与高斯Mapper的抽象桥梁。
+SLAM系统接口层实现于include/scaffold\_chunks/slam\_system.h和src/slam/builtin\_adapter.cpp，是连接SLAM前端与高斯Mapper的抽象桥梁。
 
-\textbf{SLAMSystemInterface：}定义统一的前端接口，包含\verb|trackMonocular|、\verb|trackStereo|、\verb|trackRGBD|三种传感器模式的位姿估计接口，以及\verb|hasMappingOperation|和\verb|getAndPopMappingOperation|队列接口。该抽象使系统可以自由替换前端实现（从内置适配器到完整ORB-SLAM3集成）而无需改动Mapper。
+\textbf{SLAMSystemInterface：}定义统一的前端接口，包含trackMonocular、trackStereo、trackRGBD三种传感器模式的位姿估计接口，以及hasMappingOperation和getAndPopMappingOperation队列接口。该抽象使系统可以自由替换前端实现（从内置适配器到完整ORB-SLAM3集成）而无需改动Mapper。
 
-\textbf{MappingOperation：}镜像ORB-SLAM3的Atlas操作类型，以\verb|OprType|枚举区分LocalMappingBA（局部BA）、LoopClosingBA（回环BA）和ScaleRefinement（尺度精化）。每个操作携带关联的关键帧元组\verb|KFTuple|（包含关键帧ID、相机ID、位姿$T_{cw}$、RGB图像、回环标志及辅助图像）。
+\textbf{MappingOperation：}镜像ORB-SLAM3的Atlas操作类型，以OprType枚举区分LocalMappingBA（局部BA）、LoopClosingBA（回环BA）和ScaleRefinement（尺度精化）。每个操作携带关联的关键帧元组KFTuple（包含关键帧ID、相机ID、位姿$T_{cw}$、RGB图像、回环标志及辅助图像）。
 
-\textbf{BuiltinSLAMAdapter：}是\verb|SLAMSystemInterface|的自包含实现，内部持有\verb|TrackingModule|和\verb|LoopClosingModule|实例。\verb|trackMonocular|/\\ \verb|trackStereo|/ \verb|trackRGBD|方法调用对应跟踪逻辑并返回位姿；\verb|detectAndEnqueueLoop|方法定期（每10帧，ID > 50）执行回环检测并构造\verb|MappingOperation|入队。
+\textbf{BuiltinSLAMAdapter：}是SLAMSystemInterface的自包含实现，内部持有TrackingModule和LoopClosingModule实例。trackMonocular/\\ trackStereo/ trackRGBD方法调用对应跟踪逻辑并返回位姿；detectAndEnqueueLoop方法定期（每10帧，ID > 50）执行回环检测并构造MappingOperation入队。
 
 \subsection{SLAM Mapper管线（DiskChunGS对齐）}
 
-Mapper管线实现于\verb|src/mapper/mapper_core.cpp|（接口定义于\verb|include/scaffold_chunks/gaussian_mapper.h|），采用DiskChunGS对齐的两阶段设计，作为系统的顶层编排器。
+Mapper管线实现于src/mapper/mapper\_core.cpp（接口定义于include/scaffold\_chunks/gaussian\_mapper.h），采用DiskChunGS对齐的两阶段设计，作为系统的顶层编排器。
 
-\textbf{架构设计：}Mapper提供两种构造模式——SLAM模式（接收\verb|SLAMSystemInterface|共享指针）与外部模式（接收外部位姿输入），使系统可灵活切换自主SLAM或离线全局优化模式。
+\textbf{架构设计：}Mapper提供两种构造模式——SLAM模式（接收SLAMSystemInterface共享指针）与外部模式（接收外部位姿输入），使系统可灵活切换自主SLAM或离线全局优化模式。
 
-\textbf{两阶段运行循环（\texttt{run()}）：}
+\textbf{两阶段运行循环（run()）：}
 
 \textbf{Phase 1 —— 初始建图：}
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 循环处理传入帧数据：若处于SLAM模式，通过\verb|slam_system_->trackStereo()|等接口获取位姿；若为外部模式，直接使用传入位姿。
-    \item 将每帧封装为\verb|GaussianKeyframe|，累积至\verb|GaussianScene|容器。
-    \item 当满足初始建图条件（累积$\geq$\verb|min_num_initial_map_kfs|帧）时，从SLAM系统拉取并处理待处理的\verb|MappingOperation|。
-    \item 为所有关键帧批量生成高斯种子（\verb|sampleGaussians|），调用\verb|model_->trainingSetup|初始化优化器。
+    \item 循环处理传入帧数据：若处于SLAM模式，通过slam\_system\_->trackStereo()等接口获取位姿；若为外部模式，直接使用传入位姿。
+    \item 将每帧封装为GaussianKeyframe，累积至GaussianScene容器。
+    \item 当满足初始建图条件（累积$\geq$min\_num\_initial\_map\_kfs帧）时，从SLAM系统拉取并处理待处理的MappingOperation。
+    \item 为所有关键帧批量生成高斯种子（sampleGaussians），调用model\_->trainingSetup初始化优化器。
     \item 执行一次训练迭代后进入Phase 2。
 \end{enumerate}
 
 \textbf{Phase 2 —— 增量映射：}
 \begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 持续接收新帧，由SLAM系统判定是否生成新关键帧及\verb|MappingOperation|。
-    \item 定期调用\verb|combineMappingOperations()|：将所有队列中的操作按类型分组（LocalBA、LoopBA、ScaleRefinement）。
+    \item 持续接收新帧，由SLAM系统判定是否生成新关键帧及MappingOperation。
+    \item 定期调用combineMappingOperations()：将所有队列中的操作按类型分组（LocalBA、LoopBA、ScaleRefinement）。
     \item LocalBA批量处理：从操作关联的关键帧中采样高斯并进行局部窗口训练。
-    \item LoopBA处理：暂停帧接收（100ms缓冲），应用回环变换至受影响的子高斯，执行额外\verb|loop_closure_optimization_iterations|（默认1000）次训练。
-    \item 每次迭代执行\verb|trainForOneIteration()|：选择关键帧 $\to$ 视锥剔除 $\to$ MLP展开 $\to$ 渲染 $\to$ 损失计算 $\to$ 反向传播 $\to$ Adam更新 $\to$ 定期稠密化。
+    \item LoopBA处理：暂停帧接收（100ms缓冲），应用回环变换至受影响的子高斯，执行额外loop\_closure\_optimization\_iterations（默认1000）次训练。
+    \item 每次迭代执行trainForOneIteration()：选择关键帧 $\to$ 视锥剔除 $\to$ MLP展开 $\to$ 渲染 $\to$ 损失计算 $\to$ 反向传播 $\to$ Adam更新 $\to$ 定期稠密化。
 \end{enumerate}
 
-\textbf{回环闭合内存管理：}在回环闭合期间，\verb|loop_closure_memory_multiplier_|（默认8.0$\times$）将GPU锚点上限临时扩大，以容纳回环区域可能加载的额外块，避免在关键优化阶段触发频繁淘汰。
+\textbf{回环闭合内存管理：}在回环闭合期间，loop\_closure\_memory\_multiplier\_（默认8.0$\times$）将GPU锚点上限临时扩大，以容纳回环区域可能加载的额外块，避免在关键优化阶段触发频繁淘汰。
 
 \subsection{实时可视化模块}
 
-实时可视化模块实现于\verb|src/viewer/gaussian_viewer.cpp|（接口定义于\verb|include/scaffold_chunks/gaussian_viewer.h|），提供独立线程运行的交互式3D场景查看器。
+实时可视化模块实现于src/viewer/gaussian\_viewer.cpp（接口定义于include/scaffold\_chunks/gaussian\_viewer.h），提供独立线程运行的交互式3D场景查看器。
 
 \textbf{渲染架构：}
 \begin{itemize}
     \item 基于GLFW窗口 + OpenGL 3.3核心上下文，以独立线程运行，与Mapper线程解耦。
-    \item 双缓冲\verb|ViewerFrameData|结构：Mapper线程写入当前帧数据快照（高斯点云、相机位姿、关键帧列表），Viewer线程以互斥锁保护读取。
+    \item 双缓冲ViewerFrameData结构：Mapper线程写入当前帧数据快照（高斯点云、相机位姿、关键帧列表），Viewer线程以互斥锁保护读取。
     \item 绘制三类元素：相机视锥（绿色线段表示图像平面四角+相机中心连线）、关键帧轨迹（橙色折线连接所有KF位置）、高斯点云（按颜色的3D包围球/点）。
 \end{itemize}
 
@@ -532,55 +539,55 @@ Mapper管线实现于\verb|src/mapper/mapper_core.cpp|（接口定义于\verb|in
     \item 默认窗口分辨率1920$\times$1080，背景深灰（RGB 0.15, 0.15, 0.15）。
 \end{itemize}
 
-\textbf{与Mapper的数据交互：}Mapper通过\verb|submitFrameData()|接口推送每帧快照；Viewer仅读取快照副本，不直接访问\verb|GaussianModel|或\verb|GaussianScene|，确保线程安全。
+\textbf{与Mapper的数据交互：}Mapper通过submitFrameData()接口推送每帧快照；Viewer仅读取快照副本，不直接访问GaussianModel或GaussianScene，确保线程安全。
 
 \section{关键工程实现细节}
 
 \subsection{YAML配置系统}
 
-配置文件使用OpenCV YAML格式（\verb|cv::FileStorage|），定义了五组结构化配置节点（Anchor、Chunk、Optimization、Camera、Keyframe），总计40+可调参数。C++ struct与YAML节点间通过键名字符串映射实现自动解析（\verb|trainer.cpp|中的`fromYAML`函数）。
+配置文件使用OpenCV YAML格式（cv::FileStorage），定义了五组结构化配置节点（Anchor、Chunk、Optimization、Camera、Keyframe），总计40+可调参数。C++ struct与YAML节点间通过键名字符串映射实现自动解析（trainer.cpp中的`fromYAML`函数）。
 
 \subsection{线程安全设计}
 
-关键帧容器（`GaussianScene`）使用\verb|std::mutex|保护内部\verb|std::map|，提供线程安全的`addKeyframe`/`getKeyframe`/`getAllKeyframes`接口，确保训练线程与数据加载线程的并发安全。
+关键帧容器（`GaussianScene`）使用std::mutex保护内部std::map，提供线程安全的`addKeyframe`/`getKeyframe`/`getAllKeyframes`接口，确保训练线程与数据加载线程的并发安全。
 
 \subsection{张量序列化}
 
-`TensorHeader`提供跨平台的张量元数据编码：维度数、各维度大小、数据类型（\verb|c10::ScalarType|的整数编码）及数据字节数。序列化时直接写入\verb|tensor.data_ptr()|指向的原始内存块，反序列化时通过\verb|torch::from_blob|重建张量，避免逐元素拷贝。
+`TensorHeader`提供跨平台的张量元数据编码：维度数、各维度大小、数据类型（c10::ScalarType的整数编码）及数据字节数。序列化时直接写入tensor.data\_ptr()指向的原始内存块，反序列化时通过torch::from\_blob重建张量，避免逐元素拷贝。
 
 \section{系统文件组织}
 
 表\ref{tab:fileorg}列出了系统的核心源文件及其对应章节。
 
-\begin{table}[htbp]
-\centering
-\caption{核心源文件与章节对应}
+\begin{center}
+\captionof{table}{核心源文件与章节对应}
 \label{tab:fileorg}
-\begin{tabular}{ll}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{l@{\hspace{0.8em}}l}
 \toprule
 \textbf{文件} & \textbf{本章对应节} \\
 \midrule
-\verb|include/.../config.h| & \S3.1 \\
-\verb|src/model/model_core.cpp| & \S3.2.1, \S3.2.2 \\
-\verb|src/model/model_mlp.cpp| & \S3.2.3 \\
-\verb|src/model/model_optimization.cpp| & \S3.2.4 \\
-\verb|include/.../chunk_types.h| & \S3.3.1 \\
-\verb|src/model/model_memory.cpp| & \S3.3.2, \S3.3.3 \\
-\verb|src/model/model_storage.cpp| & \S3.3.4 \\
-\verb|src/rendering/frustum_culler.cpp| & \S3.4.1 \\
-\verb|src/rendering/gaussian_renderer.cpp| & \S3.4.2 \\
-\verb|src/training/losses.cpp| & \S3.4.3 \\
-\verb|src/training/trainer.cpp| & \S3.4.4 \\
-\verb|src/depth/depth_estimator.cpp| & \S3.4.5 \\
-\verb|src/slam/tracking.cpp| & \S3.4.6 \\
-\verb|src/slam/loop_closing.cpp| & \S3.4.7 \\
-\verb|include/.../slam_system.h| & \S3.4.8 \\
-\verb|src/slam/builtin_adapter.cpp| & \S3.4.8 \\
-\verb|src/mapper/mapper_core.cpp| & \S3.4.9 \\
-\verb|src/viewer/gaussian_viewer.cpp| & \S3.4.10 \\
+include/.../config.h & \S3.1 \\
+src/model/model\_core.cpp & \S3.2.1, \S3.2.2 \\
+src/model/model\_mlp.cpp & \S3.2.3 \\
+src/model/model\_optimization.cpp & \S3.2.4 \\
+include/.../chunk\_types.h & \S3.3.1 \\
+src/model/model\_memory.cpp & \S3.3.2, \S3.3.3 \\
+src/model/model\_storage.cpp & \S3.3.4 \\
+src/rendering/frustum\_culler.cpp & \S3.4.1 \\
+src/rendering/gaussian\_renderer.cpp & \S3.4.2 \\
+src/training/losses.cpp & \S3.4.3 \\
+src/training/trainer.cpp & \S3.4.4 \\
+src/depth/depth\_estimator.cpp & \S3.4.5 \\
+src/slam/tracking.cpp & \S3.4.6 \\
+src/slam/loop\_closing.cpp & \S3.4.7 \\
+include/.../slam\_system.h & \S3.4.8 \\
+src/slam/builtin\_adapter.cpp & \S3.4.8 \\
+src/mapper/mapper\_core.cpp & \S3.4.9 \\
+src/viewer/gaussian\_viewer.cpp & \S3.4.10 \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 \section{本章小结}
 
