@@ -1,0 +1,17 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{grfext}[2026/05/14 Minimal graphics extension shim]
+\makeatletter
+\providecommand{\AppendGraphicsExtensions}[1]{%
+  \begingroup
+    \toks@=\expandafter{\Gin@extensions}%
+    \xdef\Gin@extensions{\the\toks@#1,}%
+  \endgroup
+}
+\providecommand{\PrependGraphicsExtensions}[1]{%
+  \begingroup
+    \toks@=\expandafter{\Gin@extensions}%
+    \xdef\Gin@extensions{#1,\the\toks@}%
+  \endgroup
+}
+\makeatother
+\endinput
