@@ -5,69 +5,51 @@
 
 \section{研究背景与意义}
 
-三维场景重建是计算机视觉与机器人领域的核心问题之一，其目标是从传感器数据中恢复环境的几何结构与外观信息。该技术在增强现实（AR/VR）、自动驾驶、机器人导航、数字孪生以及文化遗产数字化保护等领域具有广泛的应用前景。
+同步定位与建图（Simultaneous Localization and Mapping, SLAM）是机器人感知、自动驾驶、增强现实和数字孪生等应用中的基础问题，其目标是在传感器连续运动过程中同时估计相机或平台位姿，并构建可供后续定位、导航、理解和可视化使用的环境地图。随着应用场景从室内短序列扩展到户外长距离、移动机器人和大规模三维空间，SLAM地图的功能也从早期“辅助定位的稀疏几何结构”逐渐演化为“同时服务于定位、渲染、交互和长期维护的三维场景表达”。因此，现代SLAM系统不仅需要较低的轨迹误差，还需要在几何完整性、外观真实性、内存占用、实时更新和大场景扩展能力之间取得平衡。
 
-传统三维重建方法主要包括基于体素（Volumetric）的TSDF（Truncated Signed Distance Function）融合\cite{curless1996volumetric}和基于点云的结构从运动（Structure from Motion, SfM）\cite{snavely2006photo}。TSDF方法受限于固定分辨率网格，无法同时捕捉大范围场景与精细细节；点云方法虽灵活但缺乏完整的外观信息，难以生成逼真的可视化效果。
+传统三维重建与SLAM方法主要依赖显式几何表示。基于体素的TSDF（Truncated Signed Distance Function）融合\,\cite{curless1996volumetric}能够通过深度观测增量融合获得较稳定的稠密表面，但固定分辨率网格会在大范围场景和细节表达之间产生矛盾；基于点云和结构从运动（Structure from Motion, SfM）的方法\,\cite{snavely2006photo}具有较强的几何灵活性，但外观表达能力有限，难以直接生成照片级视角合成结果。传统SLAM体系在特征匹配、局部地图维护、回环检测和位姿图优化方面形成了成熟框架，NetVLAD等地点识别方法\,\cite{arandjelovic2016netvlad}也为长序列回环提供了有效工具。然而，这类方法通常将定位地图、重建地图和可视化结果分离处理，难以满足数字孪生、AR/VR和机器人沉浸式感知对高保真可渲染地图的需求。
 
-2020年，神经辐射场（Neural Radiance Fields, NeRF）\cite{mildenhall2020nerf}的提出标志着三维重建进入神经网络时代。NeRF通过MLP隐式表达场景的密度与颜色场，配合体渲染实现照片级新视角合成。然而，NeRF的体渲染需沿每条射线密集采样，导致训练与推理速度极慢（单场景训练需数小时），难以满足实时SLAM需求。
+神经辐射场（Neural Radiance Fields, NeRF）\,\cite{mildenhall2020nerf}的提出推动三维重建进入神经渲染阶段。NeRF使用多层感知机隐式表示空间位置和观察方向到颜色、密度的映射关系，并通过可微体渲染实现高质量新视角合成。该路线证明了图像重建损失能够直接驱动三维场景表示学习，也使SLAM地图从单纯几何容器进一步转向可优化的视觉场景模型。但是，NeRF需要沿每条射线密集采样并频繁查询神经网络，训练和推理开销较高；在在线SLAM中，系统还必须持续插入新关键帧、更新局部地图并维持低延迟跟踪，隐式神经场因而难以直接满足实时增量建图需求。
 
-2023年，3D高斯泼溅（3D Gaussian Splatting, 3DGS）\cite{kerbl20233dgaussians}横空出世，以显式的3D高斯椭球体取代隐式MLP表示，通过可微光栅化实现快速渲染与梯度反向传播。3DGS将训练时间从数小时缩短至数十分钟，渲染帧率达实时级别（$\ge$30 FPS），迅速成为三维视觉领域的研究热点\cite{chen2024surgey}。
+3D高斯泼溅（3D Gaussian Splatting, 3DGS）\,\cite{kerbl20233dgaussians}在神经渲染和显式几何之间提供了新的折中。3DGS以各向异性三维高斯作为场景基元，通过可微光栅化替代NeRF中的逐射线密集采样，在保持较高渲染质量的同时显著提升渲染效率。对于SLAM而言，3DGS的显式基元便于局部更新、可见性筛选、GPU并行渲染和光度误差反向传播，因此迅速成为在线稠密建图和照片级SLAM的重要研究方向\,\cite{tosi2025nerf3dgs_slam,wang2026nextgen_slam,hadero2025beyond}。
 
-然而，标准3DGS在面对大规模场景时面临严峻的\textbf{内存瓶颈}：
+然而，3DGS地图的显式性也带来了新的系统瓶颈。标准3DGS中每个高斯需要保存位置、尺度、旋转、不透明度和球谐颜色等参数；在SLAM场景中，高斯数量会随相机运动和关键帧增加而持续增长，其参数和Adam优化器状态通常需要常驻GPU显存。当场景从室内局部空间扩展到KITTI等长距离户外序列\,\cite{Geiger2012CVPR}时，单纯依赖“全地图常驻显存”的方式难以支撑长期运行。TUM RGB-D\,\cite{sturm2012tum}、Replica\,\cite{straub2019replica}、ScanNet\,\cite{dai2017scannet}和KITTI\,\cite{Geiger2012CVPR}等基准从室内RGB-D、照片级室内重建、语义扫描到自动驾驶户外场景分别提出了不同评测需求，也进一步说明3DGS-SLAM必须同时面对轨迹精度、渲染质量、地图规模和资源消耗。
 
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item \textbf{单高斯存储开销大。}每个高斯椭球体需存储位置$\mathbf{x}\in\mathbb{R}^3$、颜色（球谐系数，最高48维）、不透明度$\alpha\in\mathbb{R}$、协方差矩阵（尺度$\mathbf{s}\in\mathbb{R}^3$ + 旋转四元数$\mathbf{q}\in\mathbb{R}^4$），合计约59个浮点参数（$\sim$240 bytes/高斯）。对于中等规模的室内场景，高斯数量即可达到数百万量级，单场景显存占用轻易突破8 GB。
-    \item \textbf{场景规模受限。}所有高斯参数及其Adam优化器状态需常驻GPU显存，场景范围严格受限于显存容量。在室外大规模建图中，这一约束尤为严重。
-\end{enumerate}
+围绕上述瓶颈，现有研究大体形成了两条与本文密切相关的技术路线。第一类工作试图降低单位地图元素的冗余。Scaffold-GS\,\cite{lu2024scaffoldgs}以体素化锚点、局部子高斯和视角条件MLP组织高斯场，将“逐高斯显式存储”转化为“锚点特征+共享解码器”的结构化表示；Compact 3D Gaussian Splatting for Dense Visual SLAM\,\cite{deng2025compact}和RTGS\,\cite{li2025rtgs}进一步面向在线SLAM场景，从紧凑表示和多层冗余削减角度控制内存与计算开销。第二类工作关注大场景调度和外存管理。DiskChunGS\,\cite{feldmann2026diskchungs}将高斯地图按空间块组织，将非活跃块及其优化状态写入磁盘，仅在GPU中保留当前可见或近期使用的块；GigaSLAM\,\cite{deng2025gigaslam}、Large-Scale Gaussian Splatting SLAM\,\cite{xin2025largescale}、TLS-SLAM\,\cite{cheng2025tlsslam}和VPGS-SLAM\,\cite{deng2026vpgsslam}也分别从层次化高斯、局部子图、大规模调度和体素渐进式建图角度探索场景扩展问题。
 
-针对上述问题，学术界在两条技术路线上取得了重要进展：
-
-\begin{itemize}
-    \item \textbf{锚点压缩表示（Scaffold-GS）\cite{lu2024scaffoldgs}}：以稀疏的体素化锚点替代独立高斯，通过轻量MLP在渲染时解码子高斯参数，将单高斯存储开销压缩5--10倍。Compact\_GSSLAM\cite{chen2025compact}进一步将锚点表示引入SLAM系统，在嵌入式平台上实现了可控内存的稠密SLAM。
-    \item \textbf{分块外存管理（DiskChunGS）\cite{feldmann2026diskchungs}}：将场景按空间划分为固定块（chunk），设计LRU淘汰策略将非活跃块换出至磁盘，仅在GPU显存中保留可见区域，理论上支持无限大场景。
-\end{itemize}
-
-然而，这两项技术尚未被整合到一个统一的系统中。本文将二者深度融合，设计并实现\ScaffoldChunGS——一个兼具存储压缩与场景扩展能力的3D高斯SLAM系统。
-
+上述研究为大规模3DGS-SLAM奠定了基础，但压缩表示与外存调度仍然缺少统一系统抽象。锚点压缩能够降低局部地图冗余，却通常默认锚点或高斯整体常驻GPU；块级外存管理能够突破显存容量上限，却若仍以完整高斯为块内基本单元，块内冗余和优化状态开销仍然较高。本文面向这一矛盾，设计并实现\ScaffoldChunGS——一个融合锚点压缩场景表示与分块外存管理的3D高斯SLAM系统。本文的核心意义在于，将锚点级存储、块级调度和子高斯级渲染统一到同一工程框架中，为长时间、大范围、资源受限场景下的3DGS-SLAM提供一种可扩展实现路径。
 
 \section{国内外研究现状}
 
-围绕实时三维重建与视觉SLAM，国内外研究大体经历了由传统几何地图、隐式神经辐射场到显式3D高斯表示的演进。传统SLAM系统通常以稀疏特征点、稠密点云、TSDF体素或网格作为地图，优势在于几何约束清晰、工程体系成熟，但在照片级外观表达、可微优化与实时新视角合成方面存在不足。NeRF类方法提升了连续辐射场表达能力，却因逐射线采样和网络查询开销较高，难以直接满足在线SLAM的实时跟踪与增量建图需求。3DGS以显式各向异性高斯和可微光栅化兼顾渲染质量与速度，因而成为近年来SLAM地图表示的重要研究方向。结合项目所给文献，现有工作可从国外研究、国内研究以及不足三个层面进行归纳。
+围绕视觉SLAM和三维场景表达，国内外研究呈现出由feature-based SLAM、neural rendering SLAM、Gaussian Splatting SLAM到dynamic SLAM逐步扩展的趋势。Feature-based SLAM强调可重复特征、几何约束和回环检测，是在线定位和全局一致性维护的基础；neural rendering SLAM将可微渲染引入地图表达，提升了外观重建能力；Gaussian Splatting SLAM进一步以显式高斯基元兼顾实时渲染和可微优化；dynamic SLAM则面向真实场景中的运动物体和长期变化，要求系统具备选择性更新和地图维护能力。结合本文“锚点压缩与分块外存管理”的主题，现有工作可从以下几个方面进行归纳。
 
-\subsection{国外研究现状}
+\subsection{特征SLAM与神经渲染SLAM研究}
 
-\subsubsection{3DGS地图表示与稠密SLAM}
+传统特征SLAM虽然不是本文的直接研究对象，但其形成的前端跟踪、地点识别、回环候选生成和位姿约束思想仍然是高斯SLAM系统的重要支撑。NetVLAD\,\cite{arandjelovic2016netvlad}代表了学习型地点识别方法在大范围场景回环检测中的作用；视锥裁剪等几何工具\,\cite{gribb2001fast}则体现了SLAM系统必须在全局地图和当前可见区域之间建立高效选择机制。对3DGS-SLAM而言，这些思想被转化为关键帧检索、可见高斯筛选、块加载和active set维护等系统模块。国内相关工作更偏向机器人导航与系统集成，例如将3DGS地图与移动机器人定位、ROS框架和RRT路径规划结合\,\cite{ma2025robot3dgs,liu2025rrt3dgs}，说明可渲染地图最终需要服务于真实机器人任务，而不仅是离线视觉重建。
 
-国外关于3DGS-SLAM的研究起步较早，重点在于证明3D高斯能否替代传统点云或体素成为统一的地图、渲染与优化载体。SplaTAM\cite{keetha2024splatam}将RGB-D输入下的跟踪与建图统一到高斯泼溅框架中，以渲染图像和观测图像之间的光度误差反向优化相机位姿与高斯参数，验证了显式高斯地图在稠密SLAM中的可行性。Gaussian Splatting SLAM\cite{matsuki2024gaussiansplatting}、GS-SLAM\cite{yan2024gsslam}和Photo-SLAM\cite{huang2024photoslam}进一步从单目、双目、RGB-D多传感器输入、关键帧管理和前后端解耦等方面完善系统框架，使3DGS逐渐从离线重建技术扩展为在线SLAM模块。相关综述\cite{tosi2025nerf3dgs_slam,wang2026nextgen_slam,hadero2025beyond}指出，该方向的核心优势是以可渲染地图直接参与位姿估计，减少传统SLAM中几何地图、纹理地图和可视化模块之间的割裂。
+Neural rendering SLAM的核心贡献在于将地图表示从几何实体扩展为可微视觉场景模型。NeRF\,\cite{mildenhall2020nerf}以连续辐射场形式提升了新视角合成质量，但其计算模式与在线SLAM的低延迟需求存在冲突。相关综述\,\cite{tosi2025nerf3dgs_slam,hadero2025beyond}将NeRF与3DGS视为神经渲染SLAM的连续演进：前者证明了图像监督驱动三维场景学习的可行性，后者则通过显式高斯基元降低渲染和更新开销。国内关于三维高斯辐射场压缩、场景建模优化和可见性感知紧凑3DGS的研究\,\cite{songmingqing2025probecompression,wansiyao2025gaussianopt,hejinxu2025compact3dgs}也表明，神经渲染路线正在从单纯追求照片级效果转向关注显著性、压缩率和工程可用性。
 
-在此基础上，研究者开始关注动态环境、多传感器融合和鲁棒闭环。GS-LIVO\cite{hong2025gslivo}、VIGS-Fusion\cite{ndoye2025vigsfusion}与VIGS-SLAM\cite{zhu2026vigsslam}将视觉、惯性乃至激光雷达观测引入3DGS建图，利用IMU预测或LiDAR几何约束缓解纯视觉在快速运动、弱纹理与尺度漂移场景下的不稳定。Che等\cite{che2026denseimu}进一步强调IMU和几何约束对稠密3DGS-SLAM的跟踪稳定性。针对长序列累计漂移，Wang等\cite{wang2024looploss}、Xiao等\cite{xiao2025visibilityloop}和LoopSplat\cite{zhu2025loopsplat}分别从综合损失、可见性回环与高斯配准角度研究闭环约束，使高斯地图不仅能局部优化，也能服务于全局一致性维护。
+\subsection{Gaussian Splatting SLAM研究}
 
-\subsubsection{压缩、加速与大规模扩展}
+国外3DGS-SLAM研究首先解决的是“显式高斯能否成为在线SLAM地图”的问题。SplaTAM\,\cite{keetha2024splatam}将RGB-D输入下的跟踪与建图统一到高斯泼溅框架中，通过渲染图像与观测图像之间的误差联合优化相机位姿和高斯参数；Gaussian Splatting SLAM\,\cite{matsuki2024gaussiansplatting}、GS-SLAM\,\cite{yan2024gsslam}和Photo-SLAM\,\cite{huang2024photoslam}进一步从单目、双目、RGB-D输入、关键帧管理和前后端协同等方面完善系统框架。这些工作证明，3DGS能够从离线重建表示转化为在线可优化地图，但也暴露出高斯数量增长、局部优化漂移和GPU显存压力等问题。
 
-标准3DGS虽然渲染速度快，但每个高斯需保存位置、尺度、旋转、不透明度和球谐颜色等大量参数，稠密SLAM中高斯数量会随时间持续增长。针对存储冗余，Scaffold-GS\cite{lu2024scaffoldgs}提出以体素化锚点组织局部高斯结构：每个锚点携带可学习特征和若干子偏移，渲染时通过视角条件MLP解码颜色、协方差与不透明度，从而将“逐高斯显式存储”转化为“锚点特征+共享解码器”的分层表示。Compact 3D Gaussian Splatting for Dense Visual SLAM\cite{deng2025compact}和RTGS\cite{li2025rtgs}进一步面向SLAM的在线场景，分别从紧凑表示、多层冗余削减和增量训练效率等角度降低内存与计算开销。REACT3D\cite{wang2025react3d}和SPLATONIC\cite{huang2026splatonic}则从边缘加速器与稀疏处理硬件支持角度说明，3DGS-SLAM的实时落地不仅依赖算法压缩，也依赖内存访问模式与并行计算结构的优化。
+在鲁棒性方面，研究者开始将高斯SLAM与多传感器约束、回环闭合和几何先验结合。GS-LIVO\,\cite{hong2025gslivo}、VIGS-Fusion\,\cite{ndoye2025vigsfusion}、VIGS-SLAM\,\cite{zhu2026vigsslam}以及结合IMU和几何约束的稠密3DGS-SLAM\,\cite{che2026denseimu}说明，视觉、惯性和激光雷达信息的融合有助于缓解弱纹理、快速运动和尺度漂移问题。LoopSplat\,\cite{zhu2025loopsplat}以及基于回环位姿优化、可见性回环和深度优化的工作\,\cite{wang2024looploss,xiao2025visibilityloop}则强调，高斯地图不仅要在局部窗口内保持光度一致，还需要在长序列中维护全局一致性。对于本文而言，这些研究提示块级外存管理不能只关注数据换入换出，还要考虑回环后地图块和优化状态如何持续更新。
 
-针对大场景，研究重点从单场景压缩扩展到分层组织、按需加载与外存调度。DiskChunGS\cite{feldmann2026diskchungs}将3DGS-SLAM地图划分为空间块，仅在GPU中保留当前可见或近期使用的块，并将非活跃块连同优化器状态写入磁盘，突破了“全地图常驻显存”的限制。GigaSLAM\cite{deng2025gigaslam}、Large-Scale Gaussian Splatting SLAM\cite{xin2025largescale}、TLS-SLAM\cite{cheng2025tlsslam}和VPGS-SLAM\cite{deng2026vpgsslam}分别从层次化高斯、轨迹局部子图、大规模场景调度和体素渐进式建图方面探索大范围环境中的地图增长问题。LODGE\cite{kulhanek2025lodge}、FlashGS\cite{feng2025flashgs}等渲染方向工作也表明，多层细节、可见性裁剪和高效排序对大规模高斯地图的交互式显示具有重要价值。
+在大规模扩展方面，研究重点逐渐从“单场景高质量重建”转向“长时间运行中的地图增长控制”。Scaffold-GS\,\cite{lu2024scaffoldgs}、Compact 3D Gaussian Splatting\,\cite{deng2025compact}和RTGS\,\cite{li2025rtgs}侧重降低单位地图表示的冗余；GigaSLAM\,\cite{deng2025gigaslam}、Large-Scale Gaussian Splatting SLAM\,\cite{xin2025largescale}、TLS-SLAM\,\cite{cheng2025tlsslam}和VPGS-SLAM\,\cite{deng2026vpgsslam}侧重层次组织、局部子图和大规模场景调度；LODGE\,\cite{kulhanek2025lodge}、FlashGS\,\cite{feng2025flashgs}等渲染方向工作则从层次细节、可见性裁剪和高效排序角度提升大规模高斯地图的显示效率。REACT3D\,\cite{wang2025react3d}和SPLATONIC\,\cite{huang2026splatonic}进一步从边缘加速和稀疏处理架构角度说明，实时3DGS-SLAM的瓶颈同时存在于算法复杂度、显存访问模式和硬件执行路径中。
 
-\subsection{国内研究现状}
+国内Gaussian Splatting SLAM研究与国际路线具有相同的问题意识，但更强调轻量化、动态场景和机器人落地。谭臻\,\cite{tan2025slamopportunity}从SLAM技术演进角度讨论高斯溅射带来的新机遇；王宇哲\,\cite{wangyuzhe2025lightweight}面向轻量化3D高斯稠密视觉SLAM，关注有限算力平台上的重建质量与运行效率；伍清波\,\cite{wuqingbo2025compression}、王禹童\,\cite{wangyutong2025maskcompression}、何金旭\,\cite{hejinxu2025compact3dgs}和宋明清\,\cite{songmingqing2025probecompression}分别从模型压缩、掩码稀疏化、几何可见性感知和光照/外观压缩角度降低高斯冗余。陈泽西\,\cite{chenzexi2025rertg}的实时大规模三维场景重建优化和田鑫雨\,\cite{tianxinyu2025brainslam}的类脑同步定位与3DGS建图，也从全局优化和长期空间记忆角度说明国内研究正在从局部建图走向大规模、实时化和应用化。
 
-国内对3DGS与SLAM结合的研究虽起步稍晚，但已在综述梳理、系统集成、动态场景、压缩优化和机器人应用等方向形成较丰富探索。谭臻\cite{tan2025slamopportunity}从SLAM技术演进角度讨论高斯溅射带来的新机遇，指出显式可微地图有望统一建图、定位和高质量渲染。马夏生\cite{ma2025robot3dgs}围绕移动机器人视觉定位与建图，将3DGS用于机器人场景表达；刘子麒\cite{liu2025rrt3dgs}进一步结合ROS、RRT路径规划和3DGS地图，体现出国内研究对“可导航三维地图”的工程需求。张兰鑫\cite{zhanglanxin2025dynamicrgbd}和张斌\cite{zhangbin2025dynamic3dgs}关注动态RGB-D或动态3D高斯SLAM，强调现实场景中运动物体分割、动态高斯剔除和稳定相机跟踪的重要性。
+\subsection{动态SLAM与长期地图维护研究}
 
-在轻量化与压缩方面，国内文献与本文主题联系更为紧密。王宇哲\cite{wangyuzhe2025lightweight}研究轻量化3D高斯稠密视觉SLAM系统，目标是在有限算力平台上兼顾重建质量与运行速度。伍清波\cite{wuqingbo2025compression}、何金旭\cite{hejinxu2025compact3dgs}、王禹童\cite{wangyutong2025maskcompression}、宋明清\cite{songmingqing2025probecompression}和万思瑶\cite{wansiyao2025gaussianopt}分别从模型压缩、几何可见性感知、掩码稀疏化、光照探针和高斯场景优化等角度降低3DGS的存储或渲染负担。这些研究表明，国内学者已经认识到高斯地图冗余、显存占用和边缘端部署之间的矛盾，并尝试通过剪枝、量化、结构化表示和先验约束提升可用性。陈泽西\cite{chenzexi2025rertg}提出面向大规模三维场景的实时重建优化流程，田鑫雨\cite{tianxinyu2025brainslam}探索类脑同步定位与3DGS建图，也从不同角度说明高斯SLAM正在向实时化、鲁棒化和应用化发展。
+动态SLAM关注静态世界假设被破坏后的定位和建图问题。对于传统SLAM，动态物体往往表现为错误特征和外点匹配；对于neural rendering和3DGS-SLAM，动态物体还可能被吸收到可渲染地图中，造成长期污染。国内关于RGB-D动态高斯SLAM建模和动态3D高斯渲染SLAM的研究\,\cite{zhanglanxin2025dynamicrgbd,zhangbin2025dynamic3dgs}表明，真实机器人环境中的运动物体分割、动态高斯剔除和稳定跟踪已经成为高斯SLAM落地的重要问题。多传感器高斯SLAM\,\cite{hong2025gslivo,zhu2026vigsslam,che2026denseimu}也可从动态鲁棒性的角度理解：当视觉观测受到动态干扰时，IMU、LiDAR和几何约束能够为位姿估计提供额外稳定性。
 
-总体来看，国外研究在基础算法、系统框架和大规模数据集验证方面积累较快，国内研究则更加关注机器人系统落地、动态环境处理和轻量化改进。两类研究共同指向同一问题：若要让3DGS-SLAM服务于长时间、大范围、资源受限的机器人任务，仅依靠渲染速度优势并不足够，还必须同时解决地图表示压缩、显存容量约束、块级调度和优化状态持久化等问题。
+动态场景研究对本文的启示在于，大规模3DGS-SLAM最终不仅要解决“如何存储更多地图”，还要解决“哪些地图值得长期存储”。本文主要面向静态或准静态大场景中的锚点压缩与块级外存管理，但所设计的锚点级块格式、访问时间戳、优化状态持久化和可见性调度机制，也为未来在锚点层面引入动态置信度、对象级标签和时间一致性提供了接口基础。
 
-\subsection{现有工作的不足}
+\subsection{现有工作的不足与本文定位}
 
-综合上述文献，现有3DGS-SLAM研究仍存在以下不足：
+综合上述研究，现有3DGS-SLAM仍存在以下不足。首先，压缩表示与大规模调度尚未充分统一。Scaffold-GS\,\cite{lu2024scaffoldgs}和Compact 3D Gaussian Splatting\,\cite{deng2025compact}能够降低单位地图元素的存储成本，但多数情况下仍假设地图整体在GPU中优化；DiskChunGS\,\cite{feldmann2026diskchungs}等块级外存方法能够突破显存上限，但若块内仍保存完整高斯参数，则难以充分消除局部冗余。其次，渲染质量、跟踪稳定性和资源消耗之间缺少统一权衡。高斯越密集通常越有利于照片级渲染，但排序、光栅化、反向传播和优化器状态开销也随之增长；冗余削减过强又可能影响局部几何覆盖和位姿估计稳定性。再次，全局一致性与持久化地图管理之间的耦合仍不充分。回环发生时，部分地图块可能已经从GPU卸载到磁盘，传统全局优化流程需要与块级加载、局部重优化和优化状态恢复机制结合。最后，动态环境下的长期地图生命周期管理仍有待深入研究，静态锚点、短期动态锚点和对象级结构如何共同参与外存调度仍缺少统一方案。
 
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item \textbf{压缩与扩展往往分离。}Scaffold-GS\cite{lu2024scaffoldgs}和紧凑3DGS-SLAM\cite{deng2025compact}侧重降低单位地图元素的存储成本，但通常默认锚点或高斯整体常驻GPU；DiskChunGS\cite{feldmann2026diskchungs}侧重块级外存管理，却仍以较完整的高斯参数作为块内基本存储对象。两类思路尚未充分融合。
-    \item \textbf{在线优化状态管理不足。}SLAM中的地图并非静态资产，锚点/高斯会随关键帧增量生长、剪枝并持续被Adam等优化器更新。若只保存渲染参数而忽略梯度累积、优化器动量和访问时间戳，块换入后会出现训练状态不连续的问题。
-    \item \textbf{大场景评价仍不充分。}大量工作在TUM RGB-D、Replica、ScanNet等室内数据集上验证局部稠密建图效果，而面向KITTI等长距离室外序列的持续建图、回环后一致性维护和磁盘I/O压力评估仍相对不足。
-    \item \textbf{工程体系缺少统一抽象。}锚点压缩需要MLP解码、层级生长与特征维护；分块管理需要空间哈希、可见性判断、LRU淘汰和二进制序列化。二者结合时，块的基本粒度应从“高斯”提升到“锚点”，渲染阶段还需在“块可见—锚点可见—子高斯展开”之间建立稳定的数据流。
-\end{enumerate}
-
-因此，本文选择将Scaffold-GS的锚点压缩思想与DiskChunGS的分块外存思想统一到同一C++/LibTorch系统中，重点研究锚点级地图表示、块级外存调度和可微渲染优化之间的协同机制。
+因此，本文并不试图重新设计一个完整的前端SLAM算法，而是聚焦3DGS-SLAM在长时间、大范围运行中的地图表示和资源管理问题。本文选择将Scaffold-GS的锚点压缩思想与DiskChunGS的分块外存思想统一到同一C++/LibTorch系统中，将块管理的基本粒度从“完整高斯集合”提升为“锚点及其解码状态”，并围绕“块级调度、锚点级存储、子高斯级渲染”构建统一数据流。通过这一设计，本文希望在保持3DGS可渲染地图优势的同时，缓解单高斯冗余和全局显存上限两类瓶颈，为大场景3D高斯SLAM系统提供可实现、可扩展的工程框架。
 
 \section{主要研究内容}
 
