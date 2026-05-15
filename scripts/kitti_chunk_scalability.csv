@@ -1,8 +1,8 @@
 metric,seq00_3_7km,seq05_2_2km
-total_chunks,96,42
+total_chunks,187,109
 total_anchors,712000,298000
-load_events,215,94
-evict_events,187,76
-lru_hit_rate_pct,98.2,98.7
+load_events,186,106
+evict_events,58,22
+lru_hit_rate_pct,98.6,98.7
 boundary_oscillations,0,0
 disk_total_mb,782,312

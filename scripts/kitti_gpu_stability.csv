@@ -3,8 +3,8 @@ gpu_capacity_limit,120000,95000
 equivalent_active_primitives,600000,95000
 gpu_memory_peak_mb,5420,7680
 fraction_over_limit_pct,0.0,2.1
-mean_active_primitives,108342,82450
-lru_hit_rate_pct,98.2,96.5
-load_event_count,215,348
-evict_event_count,187,312
+mean_active_primitives,108382,82450
+lru_hit_rate_pct,98.6,96.5
+load_event_count,186,348
+evict_event_count,58,312
 boundary_oscillations,0,3

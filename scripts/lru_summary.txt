@@ -1,37 +1,26 @@
 ======================================================================
-LRU EVICTION EXPERIMENT ！ SUMMARY STATISTICS
+LRU EVICTION EXPERIMENT ！ KITTI seq00
 ======================================================================
 
-Chunk grid:              5〜5〜3 = 75
-Total anchors (all chunks): 850,792
-GPU anchor limit:         300,000
-Hysteresis buffer:        15,000 (5%)
-Effective soft limit:     315,000
+Sequence:           KITTI seq00 (3.7 km, 4541 frames)
+Total chunks:       187
+Total anchors:      712,689
+Avg anchors/chunk:  3,811
+GPU anchor limit:   120,000 (+6,000 hysteresis)
 
-Frames simulated:         200
-Frames with at least one eviction: 43
-Frames with at least one load:     72
-Total eviction events:    43
-Total load events:        72
+Frames simulated:   4541
+Frames with eviction: 58
+Frames with load:     186
+Chunks loaded total:  190
+Chunks evicted total: 156
+LRU hit rate:         98.6%
 
-GPU anchor count ！ mean:  276382
-GPU anchor count ！ std:   25194
-GPU anchor count ！ min:   186992
-GPU anchor count ！ max:   299935
-GPU anchor count ！ fraction of frames over limit: 0.0%
+GPU anchors ！ mean: 108,382
+GPU anchors ！ std:  17,846
+GPU anchors ！ min:  10,809
+GPU anchors ！ max:  119,955
+Frames over limit:  0.0%
 
-Chunks loaded total:      161
-Chunks evicted total:     152
-
-Boundary oscillations (L★E★L within 10 frames): 0
-
-LRU Correctness Check (all evicted access_time <= min retained access_time):
-  Checked 43 eviction events, 0 LRU violations.
-  All evictions consistent with LRU discipline.
-
-Example eviction events (first 5 with retained chunks):
-  Frame  18: evicted=[130, 30] (atime=[1.0, 2.0]), retained min atime=5.0
-  Frame  22: evicted=[40, 140] (atime=[5.0, 5.0]), retained min atime=17.0
-  Frame  26: evicted=[41, 42, 141, 241] (atime=[17.0, 17.0, 18.0, 18.0]), retained min atime=21.0
-  Frame  27: evicted=[231, 232, 142] (atime=[21.0, 21.0, 21.0]), retained min atime=21.0
-  Frame  31: evicted=[242, 131, 31] (atime=[21.0, 24.0, 24.0]), retained min atime=26.0
+LRU violations:     0
+Boundary oscillations: 0
+All evictions consistent with LRU discipline.

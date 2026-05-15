@@ -1,0 +1,42 @@
+{
+  "seq00": {
+    "name": "seq00",
+    "frames": 4541,
+    "distance_km": 3.6999999999999855,
+    "total_chunks": 187,
+    "total_anchors": 712689,
+    "avg_anchors_per_chunk": 3811,
+    "gpu_mean": 108382,
+    "gpu_std": 17846,
+    "gpu_min": 10809,
+    "gpu_max": 119955,
+    "frames_over_limit_pct": 0.0,
+    "frames_with_load": 186,
+    "frames_with_eviction": 58,
+    "chunks_loaded_total": 190,
+    "chunks_evicted_total": 156,
+    "lru_hit_rate": 98.6,
+    "lru_violations": 0,
+    "oscillations": 0
+  },
+  "seq05": {
+    "name": "seq05",
+    "frames": 2761,
+    "distance_km": 2.1999999999999984,
+    "total_chunks": 109,
+    "total_anchors": 299162,
+    "avg_anchors_per_chunk": 2744,
+    "gpu_mean": 101091,
+    "gpu_std": 25927,
+    "gpu_min": 11413,
+    "gpu_max": 119960,
+    "frames_over_limit_pct": 0.0,
+    "frames_with_load": 106,
+    "frames_with_eviction": 22,
+    "chunks_loaded_total": 114,
+    "chunks_evicted_total": 75,
+    "lru_hit_rate": 98.7,
+    "lru_violations": 0,
+    "oscillations": 0
+  }
+}

@@ -1,0 +1,26 @@
+======================================================================
+LRU EVICTION EXPERIMENT ！ KITTI seq05
+======================================================================
+
+Sequence:           KITTI seq05 (2.2 km, 2761 frames)
+Total chunks:       109
+Total anchors:      299,162
+Avg anchors/chunk:  2,744
+GPU anchor limit:   120,000 (+6,000 hysteresis)
+
+Frames simulated:   2761
+Frames with eviction: 22
+Frames with load:     106
+Chunks loaded total:  114
+Chunks evicted total: 75
+LRU hit rate:         98.7%
+
+GPU anchors ！ mean: 101,091
+GPU anchors ！ std:  25,927
+GPU anchors ！ min:  11,413
+GPU anchors ！ max:  119,960
+Frames over limit:  0.0%
+
+LRU violations:     0
+Boundary oscillations: 0
+All evictions consistent with LRU discipline.

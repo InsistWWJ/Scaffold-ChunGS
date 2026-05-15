@@ -200,8 +200,8 @@ def fig_chunk_ablation():
                      edgecolor="white", linewidth=0.5, label="Evict Events")
     ax1.set_xticks(x)
     ax1.set_xticklabels([f"$S={s}$\n({tc} chunks)" for s, tc in zip(sizes, total_chunks)])
-    ax1.set_ylabel("Event Count (200 frames)")
-    ax1.set_ylim(0, 280)
+    ax1.set_ylabel("Event Count (4541 frames, KITTI seq00)")
+    ax1.set_ylim(0, 850)
 
     ax2 = ax1.twinx()
     ax2.plot(x, hit_rate, "D-", color="#1B7837", linewidth=2,
@@ -214,7 +214,7 @@ def fig_chunk_ablation():
     ax1.legend(lines1 + lines2, labels1 + labels2,
                frameon=True, loc="upper left", fontsize=9)
 
-    ax1.set_title("Chunk Size Ablation: I/O Events & Hit Rate")
+    ax1.set_title("Chunk Size Ablation: I/O Events & Hit Rate (KITTI seq00)")
     ax1.grid(True, alpha=0.3, axis="y")
 
     for xi, hr in zip(x, hit_rate):

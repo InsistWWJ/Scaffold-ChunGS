@@ -1,7 +1,7 @@
 metric,DiskChunGS,Scaffold_ChunGS,ratio
 total_gaussians_or_anchors,5824000,712000,
 disk_total_mb,3842,782,4.9
-num_chunk_files,128,96,
-avg_chunk_size_mb,30.0,8.1,3.7
+num_chunk_files,128,187,
+avg_chunk_size_mb,30.0,4.2,7.1
 total_io_read_gb,18.4,6.2,3.0
 total_io_write_gb,42.6,15.8,2.7
