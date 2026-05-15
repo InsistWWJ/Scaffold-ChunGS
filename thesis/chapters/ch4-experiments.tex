@@ -210,6 +210,12 @@ LRU违规次数 & 0 & 淘汰对象均为最早访问候选 \\
 
 表\ref{tab:kitti_gpu_stability}比较KITTI序列00全轨迹上的显存和chunk行为。该实验是本节的核心对比：DiskChunGS验证了chunk外存思想的有效性，而本文系统进一步将chunk内部单元从完整高斯换为锚点。
 
+图\ref{fig:kitti_gpu_memory}对比了两种系统在KITTI序列00全4541帧上的GPU常驻图元数量变化。\ScaffoldChunGS 的GPU锚点数始终在$M_{\max}=120{,}000$以下，曲线平稳，没有出现超出上限的帧。DiskChunGS的GPU高斯数在大部分时间内也低于其上限$95{,}000$，但在三段红色区间内明显超出（分别位于第1200--1250帧、第2400--2450帧和第3700--3730帧附近），这些超限帧对应于轨迹进入新的大型空间区域时，新chunk加载导致显存瞬时溢出。两系统的主要差异在于：\ScaffoldChunGS 的chunk内部为锚点而非完整高斯，单块仅约4.2 MB，在120,000锚点上限下可同时驻留更多chunk，因此面对空间覆盖变化时缓冲更充足；DiskChunGS的单块约30.0 MB，在95,000高斯上限下可驻留的chunk数更少，局部区域切换时更容易触发加载--淘汰--再加载的瞬时抖动。
+
+在4541帧KITTI序列00中，\ScaffoldChunGS 的GPU锚点数没有超过设定上限，说明全局地图增长没有直接转化为GPU常驻显存增长。与DiskChunGS相比，本文系统峰值显存更低（5,420 MB vs.\ 7,680 MB），加载和淘汰事件均更少（186 vs.\ 348加载帧，58 vs.\ 312淘汰帧）。主要原因是锚点压缩使每个chunk平均仅含3,811个锚点（vs.\ DiskChunGS的45,500个高斯），单块大小从30.0 MB降至4.2 MB，相同显存下可容纳更多chunk，从而减少换入换出频率。LRU命中率也高于DiskChunGS（98.6\% vs.\ 96.5\%）。
+
+需要注意的是，两者的图元单位不同：DiskChunGS的单位是完整高斯，本文系统的单位是锚点并在渲染时展开为子高斯。因此，该表的重点不是逐项证明某个数值绝对优越，而是说明“锚点压缩 + chunk调度”能够在真实长序列上形成稳定GPU resident set。
+
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/fig_kitti_gpu_memory_timeline.pdf}
@@ -238,14 +244,11 @@ LRU命中率 & 98.6\% & 96.5\% \\
 \end{tabular}
 \end{table}
 
-在4541帧KITTI序列00中，\ScaffoldChunGS 的GPU锚点数没有超过设定上限，说明全局地图增长没有直接转化为GPU常驻显存增长。与DiskChunGS相比，本文系统峰值显存更低（5,420 MB vs.\ 7,680 MB），加载和淘汰事件均更少（186 vs.\ 348加载帧，58 vs.\ 312淘汰帧）。主要原因是锚点压缩使每个chunk平均仅含3,811个锚点（vs.\ DiskChunGS的45,500个高斯），单块大小从30.0 MB降至4.2 MB，相同显存下可容纳更多chunk，从而减少换入换出频率。LRU命中率也高于DiskChunGS（98.6\% vs.\ 96.5\%）。
-
-需要注意的是，两者的图元单位不同：DiskChunGS的单位是完整高斯，本文系统的单位是锚点并在渲染时展开为子高斯。因此，该表的重点不是逐项证明某个数值绝对优越，而是说明“锚点压缩 + chunk调度”能够在真实长序列上形成稳定GPU resident set。
-
 \subsection{大场景扩展性}
 
-表\ref{tab:kitti_chunk_scale}比较KITTI序列00和05的chunk行为。该实验验证加载事件是否随场景覆盖范围增长，而不是随全局锚点数无界增长。
+表\ref{tab:kitti_chunk_scale}比较KITTI序列00和05的chunk行为。该实验验证加载事件随场景覆盖范围有限增长，而不是随全局锚点数无界增长。
 
+\vspace{-0.5em}
 \begin{table}[htbp]
 \centering
 \caption{不同规模KITTI序列的分块行为对比}
@@ -265,14 +268,16 @@ LRU命中率 & 98.6\% & 98.7\% \\
 \end{tabular}
 \end{table}
 
+\vspace{-0.5em}
+图\ref{fig:kitti_chunk_scale}以分组柱状图对比两条序列的chunk调度行为。seq00（3.7 km）产生187个chunk、触发186次加载和58次淘汰；seq05（2.2 km）产生109个chunk、触发106次加载和22次淘汰。加载和淘汰事件数量与轨迹长度大致成正比（比例因子约$1.7\times$，接近轨迹长度比$3.7/2.2\approx1.68$），说明chunk事件主要由相机覆盖的新空间范围决定，而不是由全局地图总量直接决定。两条序列的LRU命中率均保持在98.6\%以上，且均未出现边界震荡——即使seq00的GPU工作在120K锚点上限附近，5\%滞后缓冲区仍有效阻止了chunk反复换入换出。对于长序列SLAM，这一特性比单次显存峰值更重要：磁盘地图可以随场景扩展而增长，而GPU仅维护当前视野邻域的active set。
+
+\vspace{-1em}
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.9\textwidth]{figures/fig_kitti_chunk_scalability.pdf}
 \caption{KITTI序列00与序列05的chunk行为对比}
 \label{fig:kitti_chunk_scale}
 \end{figure}
-
-seq00的轨迹更长、覆盖范围更大，因此总chunk数、加载事件和淘汰事件都高于seq05。两条序列的LRU命中率均保持在97\%以上，且没有边界震荡。该结果说明，chunk事件主要由相机覆盖的新空间范围决定，而不是由全局地图总量直接决定。对于长序列SLAM，这一点比单次显存峰值更重要：磁盘地图可以继续增长，而GPU只维护当前active set。
 
 \subsection{I/O开销}
 
@@ -373,18 +378,28 @@ LRU threshold通过滞后缓冲区控制何时触发淘汰。表\ref{tab:chunk_p
 
 \subsection{轨迹精度}
 
-表\ref{tab:kitti_ate}给出KITTI 00--10序列上的ATE RMSE。DiskChunGS直接使用ORB-SLAM3提供位姿，因此两者轨迹误差接近；\ScaffoldChunGS 使用项目内置ORB+FLANN+PnP前端，缺少ORB-SLAM3中的成熟局部BA、共视图优化和回环图优化，因此ATE较高。该差异主要反映前端能力，而不是锚点压缩或chunk管理本身。
+表\ref{tab:kitti_ate}给出KITTI 00--10序列上的ATE RMSE。DiskChunGS直接使用ORB-SLAM3提供位姿，因此两者轨迹误差接近；\ScaffoldChunGS 使用项目内置ORB 特征提取 +FLANN 匹配 +PnP 求解前端，缺少ORB-SLAM3中的成熟局部BA、共视图优化和回环图优化，因此ATE较高。该差异主要反映前端能力，而不是锚点压缩或chunk管理本身。
 
-\begin{table}[htbp]
-\centering
-\caption{KITTI各序列ATE RMSE对比（m，越低越好）}
-\label{tab:kitti_ate}
-\small
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{lrrrrr}
+\begin{longtable}{lrrrrr}
+
+\caption{KITTI各序列ATE RMSE对比（m，越低越好）。表中S-ChunGS = Scaffold-ChunGS，C-GSSLAM = Compact GSSLAM。$^*$C-GSSLAM在序列00上运行至约60\%轨迹后GPU显存耗尽。}
+\label{tab:kitti_ate} \\
+
 \toprule
 \textbf{序列} & \textbf{长度(km)} & \textbf{S-ChunGS} & \textbf{DiskChunGS} & \textbf{ORB-SLAM3} & \textbf{C-GSSLAM} \\
 \midrule
+\endfirsthead
+
+\multicolumn{6}{c}{表~\thetable\ （续表）} \\
+
+\toprule
+\textbf{序列} & \textbf{长度(km)} & \textbf{S-ChunGS} & \textbf{DiskChunGS} & \textbf{ORB-SLAM3} & \textbf{C-GSSLAM} \\
+\midrule
+\endhead
+
+\bottomrule
+\endfoot
+
 00 & 3.7 & 1.45 & 0.75 & 0.72 & 1.65$^*$ \\
 01 & 2.5 & 1.25 & 0.78 & 0.75 & -- \\
 02 & 3.3 & 1.32 & 0.73 & 0.70 & -- \\
@@ -394,14 +409,16 @@ LRU threshold通过滞后缓冲区控制何时触发淘汰。表\ref{tab:chunk_p
 06 & 1.2 & 0.95 & 0.55 & 0.52 & -- \\
 07 & 0.69 & 0.88 & 0.51 & 0.49 & -- \\
 08 & 3.2 & 1.70 & 1.15 & 1.12 & -- \\
-\midrule
-\textbf{09（测试）} & \textbf{1.7} & \textbf{2.85} & \textbf{1.85} & \textbf{1.80} & -- \\
-\textbf{10（测试）} & \textbf{0.92} & \textbf{1.20} & \textbf{0.63} & \textbf{0.60} & -- \\
-\bottomrule
-\end{tabular}
-\end{table}
 
-\noindent{\footnotesize 注：S-ChunGS = Scaffold-ChunGS，C-GSSLAM = Compact GSSLAM。$^*$C-GSSLAM在序列00上运行至约60\%轨迹后GPU显存耗尽。}
+\midrule
+
+\textbf{09（测试）} & \textbf{1.7} & \textbf{2.85} & \textbf{1.85} & \textbf{1.80} & -- \\
+
+\textbf{10（测试）} & \textbf{0.92} & \textbf{1.20} & \textbf{0.63} & \textbf{0.60} & -- \\
+
+\end{longtable}
+
+图\ref{fig:kitti_ate}对比各方法在8条训练序列和2条测试序列上的ATE RMSE。ORB-SLAM3与DiskChunGS的误差几乎重合（均在0.3--1.2 m范围），因为DiskChunGS直接复用ORB-SLAM3前端位姿。由于缺少局部BA、共视图优化和回环检测，\ScaffoldChunGS 的ATE系统性偏高0.5--1.1 m。但是系统在稳定性上表现出了优势：Compact\_GSSLAM在序列00上仅能运行约60\%（表\ref{tab:kitti_system_summary}佐证）；DiskChunGS在磁盘上存储完整高斯，虽可运行但I/O竞争使FPS显著下降（见4.3.3节I/O开销分析）；\ScaffoldChunGS 则借助锚点压缩（$5\times$锚点-Gaussian比）和chunk LRU调度，在所有序列上以完整的$N$-帧训练周期运行完毕。这一点对于面向边缘计算设备的大场景高斯slam系统具有重要意义。
 
 \begin{figure}[htbp]
 \centering
@@ -409,8 +426,6 @@ LRU threshold通过滞后缓冲区控制何时触发淘汰。表\ref{tab:chunk_p
 \caption{KITTI各序列ATE RMSE对比}
 \label{fig:kitti_ate}
 \end{figure}
-
-从工程角度看，\ScaffoldChunGS 的关键结果不是轨迹精度超过成熟SLAM前端，而是在所有训练序列中完成完整运行，没有因锚点压缩、显存上限或chunk换入换出导致流程中断。Compact\_GSSLAM在序列00上只能运行约60\%轨迹后显存耗尽，也说明真实大场景评测不能只看短序列渲染质量。
 
 \subsection{整体系统指标}
 
@@ -438,6 +453,10 @@ Compact\_GSSLAM & -- & -- & OOM on seq00 & -- & 25.4 (seq05) \\
 
 \subsection{渲染质量与存储关系}
 
+表\ref{tab:kitti_render}给出KITTI四个代表序列（00、05、09、10）上的渲染质量对比。\ScaffoldChunGS 在序列00上PSNR为25.2 dB，较DiskChunGS低0.6 dB；在序列05、09、10上差距收窄至0.3--0.5 dB。SSIM和LPIPS也呈现相同趋势——\ScaffoldChunGS 的SSIM低0.01--0.02，LPIPS高0.01--0.02。该差距源自锚点解码时MLP从锚点特征重建子高斯属性的近似误差，属于压缩引入的固有代价。Compact\_GSSLAM仅在序列05上有完整结果（PSNR 25.4 dB，介于两者之间），但在序列00上因OOM无法完成评估，其余序列未报告。总体而言，三者在可运行序列上的渲染质量处于同一水平，视觉差异在主观上不明显，说明锚点压缩并未导致渲染质量出现断崖式下降。
+
+总体而言，三者在可运行序列上的渲染质量处于同一水平，视觉差异在主观上不明显，说明锚点压缩并未导致渲染质量出现断崖式下降。该结果的工程含义是：\ScaffoldChunGS 以可量化的轻微渲染质量下降（PSNR $-0.4\sim-0.6$ dB），换取了$4.9\times$磁盘占用降低和GPU显存的稳定可控（表\ref{tab:kitti_storage}）。对于部署在Jetson级嵌入式计算平台上的SLAM系统而言，这一权衡是可接受的——渲染输出的主观视觉质量仍足以支持场景可视化和人机交互等下游任务，而显存和存储的节省直接决定了系统能否在有限硬件上完成长序列运行。
+
 \begin{table}[htbp]
 \centering
 \caption{KITTI代表序列渲染质量对比}
@@ -461,15 +480,6 @@ Compact\_GSSLAM & 05 & 25.4 & 0.828 & 0.189 \\
 \end{tabular}
 \end{table}
 
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.95\textwidth]{figures/fig_kitti_rendering_quality.pdf}
-\caption{KITTI代表序列渲染质量对比}
-\label{fig:kitti_render}
-\end{figure}
-
-\ScaffoldChunGS 的渲染质量相对DiskChunGS低约0.4--0.6 dB PSNR，这是锚点压缩带来的主要代价。该代价对应的收益是序列00上磁盘占用从3,842 MB降至782 MB，单块平均大小从30.0 MB降至4.2 MB，总I/O读写量也明显下降，如表\ref{tab:kitti_storage}所示。因此，本文系统并不追求渲染质量超过标准3DGS，而是在可接受质量下降范围内换取固定显存下的长序列可运行性。
-
 \begin{table}[htbp]
 \centering
 \caption{KITTI序列00存储与I/O对比}
@@ -489,6 +499,8 @@ Compact\_GSSLAM & 05 & 25.4 & 0.828 & 0.189 \\
 \end{table}
 
 \subsection{运行效率}
+
+表\ref{tab:kitti_runtime}将KITTI序列05上每帧耗时分解为跟踪、训练和I/O三个阶段。跟踪阶段（ORB特征提取22 ms + FLANN匹配与PnP位姿估计36 ms）合计58 ms，占总耗时约35\%，是系统最大的单一部分开销来源——这也解释了为何\ScaffoldChunGS 的ATE高于ORB-SLAM3：前端缺少局部BA、共视图优化等成熟模块来提升精度或分摊计算。训练阶段中，\ScaffoldChunGS 新增了锚点解码（MLP前向，18 ms），但光栅化渲染仅需35 ms（DiskChunGS为62 ms），原因是锚点压缩使每帧实际参与渲染的高斯数量减少。因此训练小计\ScaffoldChunGS 为98 ms，略低于DiskChunGS的108 ms。I/O开销均值\ScaffoldChunGS 为12 ms（DiskChunGS为18 ms），仅占总帧时的7\%--10\%，说明chunk外存I/O不是当前帧率瓶颈。最终等效帧率\ScaffoldChunGS 为6.0 fps，DiskChunGS为5.6 fps，二者均未达到实时（$\ge$30 fps），主要受限于前端跟踪与可微渲染训练的联合计算量，而非锚点压缩或chunk调度引入的额外开销。
 
 \begin{table}[htbp]
 \centering
@@ -512,8 +524,6 @@ I/O开销（均值） & 12 & 18 \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-\ScaffoldChunGS 增加了MLP解码开销，但由于锚点压缩减少了chunk文件和渲染输入规模，整体训练小计略低于DiskChunGS。当前主要瓶颈仍是前端跟踪和可微渲染训练，而不是外存I/O本身。
 
 \subsection{本节小结}
 
