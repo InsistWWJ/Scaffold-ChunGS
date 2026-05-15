@@ -23,11 +23,13 @@
 (\mathbf{x}-\boldsymbol{\mu}_i)
 \right).
 \end{equation}
+式中，$\mathcal{G}_i(\mathbf{x})$表示第$i$个高斯在三维位置$\mathbf{x}$处的权重；$\mathbf{x}\in\mathbb{R}^3$为空间采样点；$\boldsymbol{\mu}_i$为高斯中心；$\boldsymbol{\Sigma}_i$为三维协方差矩阵；上标$\top$表示转置，$^{-1}$表示矩阵求逆。
 为保证协方差矩阵半正定，通常使用尺度和旋转分解：
 \begin{equation}
 \boldsymbol{\Sigma}_i=
 \mathbf{R}_i\mathbf{S}_i\mathbf{S}_i^\top\mathbf{R}_i^\top.
 \end{equation}
+式中，$\mathbf{R}_i$为第$i$个高斯的旋转矩阵，通常由四元数参数化；$\mathbf{S}_i$为对角尺度矩阵，其对角元素表示高斯在三个局部轴向上的尺度；该分解保证$\boldsymbol{\Sigma}_i$为半正定矩阵。
 给定相机位姿$\mathbf{T}_{cw}=[\mathbf{R}_{cw}\mid\mathbf{t}_{cw}]$和内参$\mathbf{K}$，高斯中心先变换到相机坐标系：
 \begin{equation}
 \boldsymbol{\mu}_{c,i}=\mathbf{R}_{cw}\boldsymbol{\mu}_{w,i}+\mathbf{t}_{cw},
@@ -36,6 +38,7 @@
 \begin{equation}
 \boldsymbol{\mu}_{2D,i}=\pi(\mathbf{K}\boldsymbol{\mu}_{c,i}).
 \end{equation}
+式中，$\boldsymbol{\mu}_{w,i}$和$\boldsymbol{\mu}_{c,i}$分别表示世界坐标系和相机坐标系下的高斯中心；$\mathbf{R}_{cw}$和$\mathbf{t}_{cw}$分别为世界到相机的旋转和平移；$\mathbf{K}$为相机内参矩阵；$\pi(\cdot)$为透视投影函数；$\boldsymbol{\mu}_{2D,i}$为投影后的二维像素中心。
 协方差的屏幕空间近似由投影雅可比$\mathbf{J}_i$给出：
 \begin{equation}
 \boldsymbol{\Sigma}_{2D,i}
@@ -44,6 +47,7 @@
 \boldsymbol{\Sigma}_{3D,i}
 \mathbf{R}_{cw}^{\top}\mathbf{J}_i^\top.
 \end{equation}
+式中，$\boldsymbol{\Sigma}_{3D,i}$为世界坐标系下的三维协方差；$\boldsymbol{\Sigma}_{2D,i}$为屏幕空间二维协方差；$\mathbf{J}_i$为投影函数在$\boldsymbol{\mu}_{c,i}$处的一阶雅可比矩阵；$\mathbf{R}_{cw}$将协方差从世界坐标系旋转到相机坐标系。
 因此，一个三维高斯在屏幕上对应一个局部椭圆覆盖区域。渲染计算只需要处理落入当前视锥且对像素有贡献的高斯，而不需要访问全局地图中的所有图元。这一局部性是第三章两级视锥剔除的理论基础。
 
 \subsection{Alpha混合与反向传播}
@@ -59,6 +63,7 @@
 (\mathbf{p}-\boldsymbol{\mu}_{2D,i})
 \right).
 \end{equation}
+式中，$\alpha_i'(\mathbf{p})$表示第$i$个高斯在像素$\mathbf{p}$处的有效不透明度；$\alpha_i$为该高斯的基础不透明度；$\mathbf{p}$为二维像素坐标；$\boldsymbol{\mu}_{2D,i}$和$\boldsymbol{\Sigma}_{2D,i}$分别为该高斯投影到图像平面后的中心和协方差。
 按深度从近到远排序后，像素颜色由前向Alpha混合得到：
 \begin{equation}
 \mathbf{C}(\mathbf{p}) =
@@ -68,6 +73,7 @@ T_i(\mathbf{p})\alpha_i'(\mathbf{p})\mathbf{c}_i,
 T_i(\mathbf{p})=
 \prod_{j<i}(1-\alpha_j'(\mathbf{p})).
 \end{equation}
+式中，$\mathbf{C}(\mathbf{p})$为像素$\mathbf{p}$的渲染颜色；$N_{\mathrm{vis}}$为该像素或当前视角下参与混合的可见图元数；$T_i(\mathbf{p})$为第$i$个高斯之前所有更近高斯累积后的透射率；$\mathbf{c}_i$为第$i$个高斯的颜色；$j<i$表示深度排序中位于第$i$个高斯之前的图元。
 该表达式说明，单帧渲染复杂度主要取决于当前可见图元数$N_{\mathrm{vis}}$，而不是全局地图规模$N$。若损失函数记为$\mathcal{L}(\mathbf{C},\mathbf{I})$，则反向传播链路可概括为
 \begin{equation}
 \frac{\partial\mathcal{L}}{\partial\Theta}
@@ -76,6 +82,7 @@ T_i(\mathbf{p})=
 \frac{\partial\mathbf{C}}{\partial(\boldsymbol{\mu}_{2D},\boldsymbol{\Sigma}_{2D},\alpha,\mathbf{c})}
 \frac{\partial(\boldsymbol{\mu}_{2D},\boldsymbol{\Sigma}_{2D},\alpha,\mathbf{c})}{\partial\Theta},
 \end{equation}
+式中，$\mathcal{L}$为渲染图像$\mathbf{C}$与观测图像$\mathbf{I}$之间的训练损失；$\Theta$表示被优化的地图参数；$\partial\mathcal{L}/\partial\mathbf{C}$表示图像空间损失梯度；中间项表示Alpha混合对屏幕图元属性的梯度；最后一项表示屏幕图元属性对底层可学习参数的梯度。
 其中$\Theta$表示可学习地图参数。对标准3DGS，$\Theta$是每个高斯的独立参数；在本文系统中，$\Theta$包括锚点参数和共享MLP权重。因此，第三章的渲染器必须保留可微链路，但长期存储不必采用独立高斯形式。
 
 \subsection{GPU并行特征与系统瓶颈}
@@ -84,11 +91,13 @@ T_i(\mathbf{p})=
 \begin{equation}
 M_{\mathrm{render}}=O(N_{\mathrm{vis}})+O(P_{\mathrm{tile}}),
 \end{equation}
+式中，$M_{\mathrm{render}}$表示渲染阶段中间缓存的显存复杂度；$O(\cdot)$表示渐近复杂度；$N_{\mathrm{vis}}$为当前可见图元数；$P_{\mathrm{tile}}$为被高斯覆盖的屏幕tile和像素缓存规模。
 其中$P_{\mathrm{tile}}$为被覆盖的tile和像素缓存规模。第二，若全局地图长期常驻GPU，参数和优化器状态显存为
 \begin{equation}
 M_{\mathrm{param}}=N\cdot B_G,\qquad
 M_{\mathrm{adam}}\approx 2N\cdot B_G,
 \end{equation}
+式中，$M_{\mathrm{param}}$为高斯参数本体显存；$M_{\mathrm{adam}}$为Adam优化器一阶矩和二阶矩的显存近似；$N$为全局高斯数量；$B_G$为单个高斯参数的字节数；系数2对应Adam为每个参数维护的两组动量状态。
 其中$B_G$为单个高斯参数字节数。使用三阶球谐颜色时，一个高斯约包含59个浮点参数，$B_G\approx236$ bytes；若计入Adam一阶和二阶状态，训练态显存近似为参数本体的三倍。长序列SLAM中$N$随轨迹增长，单靠GPU并行无法解决常驻显存无界增长问题。
 
 \subsection{工程落点、系统约束与图示建议}
@@ -111,12 +120,14 @@ A_i=\left\{
 \mathbf{s}_i^a,\mathbf{q}_i^a,\alpha_i^a
 \right\},
 \end{equation}
+式中，$A_i$表示第$i$个锚点的完整状态；$\mathbf{x}_i^a$为锚点空间位置；$\mathbf{f}_i^a$为锚点隐特征；$\mathbf{o}_i^k$为第$k$个子高斯相对锚点的局部偏移；$K$为每个锚点展开的子高斯数量；$\mathbf{s}_i^a$、$\mathbf{q}_i^a$和$\alpha_i^a$分别表示锚点基础尺度、基础旋转和基础不透明度；上标$a$表示anchor级状态。
 其中$\mathbf{x}_i^a$为空间位置，$\mathbf{f}_i^a\in\mathbb{R}^{D}$为隐特征，$\mathbf{o}_i^k$为局部偏移，$K$为每个锚点展开的子高斯数。第$k$个子高斯中心由
 \begin{equation}
 \mathbf{x}_i^k=
 \mathbf{x}_i^a+
 \mathbf{o}_i^k\odot\mathbf{s}_{i,\mathrm{offset}}^a
 \end{equation}
+式中，$\mathbf{x}_i^k$表示由第$i$个锚点生成的第$k$个子高斯中心；$\odot$表示逐元素乘法；$\mathbf{s}_{i,\mathrm{offset}}^a$表示锚点中用于缩放局部offset范围的尺度分量。
 给出。该结构把地图分成两个层次：anchor提供稳定的空间索引和持久化身份，child Gaussian提供当前视角下的局部渲染细节。第三章之所以在anchor粒度做分块和存储，而在child Gaussian粒度做渲染，正是因为这两个层次承担不同系统职责。
 
 \subsection{视角条件解码}
@@ -137,6 +148,7 @@ r_i
 \quad
 r_i=\|\mathbf{x}_i^a-\mathbf{c}\|.
 \end{equation}
+式中，$\mathbf{z}_i$为第$i$个锚点送入MLP的视角条件输入；$\mathbf{c}$为相机中心；$\mathbf{d}_i$为从相机指向锚点的单位视线方向；$r_i$为锚点到相机的欧氏距离；$[\cdot\mid\cdot]$表示向量拼接。
 三个共享解码器输出子高斯属性：
 \begin{equation}
 \{\alpha_i^k\}_{k=1}^{K}=F_{\alpha}(\mathbf{z}_i),
@@ -145,6 +157,7 @@ r_i=\|\mathbf{x}_i^a-\mathbf{c}\|.
 \quad
 \{\mathbf{c}_i^k\}_{k=1}^{K}=F_c(\mathbf{z}_i).
 \end{equation}
+式中，$F_{\alpha}$、$F_{\Sigma}$和$F_c$分别为不透明度、协方差/旋转和颜色解码MLP；$\alpha_i^k$为第$k$个子高斯的不透明度；$\Delta\mathbf{s}_i^k$为尺度残差；$\mathbf{q}_i^k$为子高斯旋转四元数；$\mathbf{c}_i^k$为子高斯RGB颜色。
 这说明child Gaussian的颜色、不透明度和协方差不是长期独立存储，而是由锚点特征、观察方向和距离共同决定。系统因此获得两个工程收益：一是减少逐高斯外观参数冗余；二是在视角变化时仍能通过共享MLP生成视角相关属性。
 
 \subsection{压缩比与渲染复杂度}
@@ -153,6 +166,7 @@ r_i=\|\mathbf{x}_i^a-\mathbf{c}\|.
 \begin{equation}
 M_{\mathrm{std}}=4\cdot59\cdot K N_A
 \end{equation}
+式中，$M_{\mathrm{std}}$表示标准3DGS保存同等数量渲染图元所需的参数字节数；系数4表示单精度浮点数占4 bytes；59表示一个三阶球谐3DGS高斯的近似浮点参数个数；$K$为每个锚点对应的子高斯数量；$N_A$为锚点总数。
 字节参数存储。锚点表示的显式参数量近似为
 \begin{equation}
 M_{\mathrm{anchor}}
@@ -161,15 +175,18 @@ M_{\mathrm{anchor}}
 +
 M_{\mathrm{MLP}}.
 \end{equation}
+式中，$M_{\mathrm{anchor}}$表示锚点表示的显式参数字节数；$D$为锚点特征维度；$3K$表示每个锚点保存$K$个三维offset；常数项$3$、$6$、$4$和$1$分别对应锚点位置、基础尺度、旋转四元数和基础不透明度；$M_{\mathrm{MLP}}$表示共享MLP参数占用。
 当$N_A$较大时，$M_{\mathrm{MLP}}$相对较小，压缩比可近似写为
 \begin{equation}
 R\approx
 \frac{59K}{14+D+3K}.
 \end{equation}
+式中，$R$表示相对于标准逐高斯存储的近似压缩比；分子$59K$表示每个锚点若保存$K$个完整标准高斯所需的参数量；分母$14+D+3K$表示每个锚点显式保存的位置、尺度、旋转、不透明度、特征和offset参数量；该近似忽略了随场景规模不线性增长的共享MLP项。
 该压缩并非无代价。渲染时仍需展开child Gaussian，单帧展开和渲染复杂度为
 \begin{equation}
 C_{\mathrm{render}}=O(KN_{\mathrm{vis}})+O(C_{\mathrm{MLP}}N_{\mathrm{vis}}),
 \end{equation}
+式中，$C_{\mathrm{render}}$表示单帧锚点展开和渲染的计算复杂度；$K$为每个可见锚点展开的子高斯数量；$N_{\mathrm{vis}}$为可见锚点数；$C_{\mathrm{MLP}}$为单个锚点完成MLP前向解码的计算开销。
 其中$N_{\mathrm{vis}}$为可见锚点数，$C_{\mathrm{MLP}}$为单锚点MLP前向计算开销。因此，$K$同时控制表达能力、压缩比和渲染负载。本文默认$K=5$并在第四章做消融，原因是系统需要在显存、质量和实时性之间取得折中。
 
 \subsection{工程落点、系统约束与图示建议}
@@ -190,6 +207,7 @@ C_{\mathrm{render}}=O(KN_{\mathrm{vis}})+O(C_{\mathrm{MLP}}N_{\mathrm{vis}}),
 =
 \{c\in\mathcal{C}\mid \mathcal{B}_c\cap\mathcal{V}_t\neq\emptyset\}.
 \end{equation}
+式中，$\mathcal{C}_{\mathrm{vis}}(t)$为时刻$t$几何可见的chunk集合；$\mathcal{C}$为全局chunk集合；$c$表示一个chunk；$\mathcal{B}_c$为chunk $c$的轴对齐包围盒；$\mathcal{V}_t$为相机在时刻$t$的视锥；$\cap\neq\emptyset$表示包围盒与视锥存在非空交集。
 考虑训练窗口、相邻帧预取和回环保护后，active chunk集合定义为
 \begin{equation}
 \mathcal{C}_{\mathrm{act}}(t)
@@ -200,6 +218,7 @@ C_{\mathrm{render}}=O(KN_{\mathrm{vis}})+O(C_{\mathrm{MLP}}N_{\mathrm{vis}}),
 \cup
 \mathcal{C}_{\mathrm{loop}}(t),
 \end{equation}
+式中，$\mathcal{C}_{\mathrm{act}}(t)$为时刻$t$必须保持可访问的active chunk集合；$\mathcal{C}_{\mathrm{win}}(t)$为局部训练窗口中关键帧需要访问的chunk集合；$\mathcal{C}_{\mathrm{loop}}(t)$为回环优化期间需要保护的chunk集合；$\cup$表示集合并。
 其中$\mathcal{C}_{\mathrm{win}}$表示局部关键帧窗口需要的chunk，$\mathcal{C}_{\mathrm{loop}}$表示回环优化中需要保护的chunk。第三章中的active chunk不是单纯``当前可见块''，而是当前训练闭环不可缺失的GPU工作集。
 
 \subsection{GPU常驻上界}
@@ -210,12 +229,14 @@ N_{\mathrm{act}}(t)=
 \sum_{c\in\mathcal{C}_{\mathrm{act}}(t)}n_c
 \leq N_{\max},
 \end{equation}
+式中，$N_{\mathrm{act}}(t)$表示时刻$t$ active chunk中锚点总数；$n_c$表示chunk $c$中包含的锚点数量；$N_{\max}$表示GPU允许的最大常驻锚点数。
 则锚点相关显存满足
 \begin{equation}
 M_{\mathrm{anchor}}^{\mathrm{GPU}}(t)
 \leq
 B_A N_{\max}.
 \end{equation}
+式中，$M_{\mathrm{anchor}}^{\mathrm{GPU}}(t)$表示时刻$t$ GPU中锚点训练态相关显存；$B_A$表示单个锚点参数及其训练状态的平均字节数；$N_{\max}$为GPU常驻锚点上限。
 总显存还包括MLP权重、渲染缓存和输入图像缓存：
 \begin{equation}
 M_{\mathrm{GPU}}(t)
@@ -228,6 +249,7 @@ M_{\mathrm{render}}(KN_{\mathrm{vis}})
 +
 M_{\mathrm{frame}}.
 \end{equation}
+式中，$M_{\mathrm{GPU}}(t)$表示时刻$t$系统主要GPU显存占用；$M_{\mathrm{MLP}}$为共享MLP参数及优化状态显存；$M_{\mathrm{render}}(KN_{\mathrm{vis}})$为由$K N_{\mathrm{vis}}$个子高斯带来的渲染缓存显存；$M_{\mathrm{frame}}$为当前训练帧的图像、深度和监督缓存显存。
 该上界与全局地图锚点总数$N_A$解耦，是系统能够处理大场景的关键。换言之，磁盘中的地图可以继续增长，但GPU中只允许存在由active chunk定义的局部工作集。
 
 \subsection{LRU淘汰与优化状态持久化}
@@ -239,11 +261,13 @@ c^\ast=
 \mathcal{C}_{\mathrm{load}}\setminus\mathcal{C}_{\mathrm{prot}}}
 t_{\mathrm{last}}(c).
 \end{equation}
+式中，$c^\ast$为被选中的淘汰chunk；$\mathcal{C}_{\mathrm{load}}$为当前已经加载到GPU的chunk集合；$\mathcal{C}_{\mathrm{prot}}$为当前受保护、不能淘汰的chunk集合；$t_{\mathrm{last}}(c)$为chunk $c$最近一次被访问的时间戳；$\arg\min$表示选择访问时间最早的chunk。
 被淘汰chunk不能只保存几何参数。在线训练中，Adam优化状态决定后续收敛轨迹。对chunk $c$，持久化状态应写为
 \begin{equation}
 \mathcal{S}_c=
 \{\theta_c,m_c,v_c,t_c,a_c\},
 \end{equation}
+式中，$\mathcal{S}_c$表示chunk $c$需要持久化的完整训练状态；$\theta_c$为chunk内锚点参数；$m_c$和$v_c$分别为Adam一阶矩和二阶矩；$t_c$为优化步数；$a_c$为访问时间、访问次数等调度统计。
 其中$\theta_c$为锚点参数，$m_c$和$v_c$为Adam一阶、二阶矩，$t_c$为优化步数，$a_c$为访问统计。若只保存$\theta_c$，重新加载后相当于重启局部优化器，可能造成跨chunk外观不连续。因此第三章的\schun 文件保存的是可恢复训练状态，而不是只用于显示的几何块。
 
 \subsection{两级视锥剔除的必要性}
@@ -258,6 +282,7 @@ O(N_{\mathrm{act}})
 +
 O(KN_{\mathrm{vis}}),
 \end{equation}
+式中，$C_{\mathrm{frame}}$表示单帧从chunk查询到渲染展开的主要计算复杂度；$|\mathcal{C}_{\mathrm{query}}|$为参与粗筛的chunk数量；$N_{\mathrm{act}}$为active chunk中的常驻锚点数；$K$为每个锚点展开的子高斯数；$N_{\mathrm{vis}}$为anchor级视锥剔除后的可见锚点数。
 其中$N_{\mathrm{vis}}=|\mathcal{A}_{\mathrm{vis}}|$且$N_{\mathrm{vis}}\leq N_{\mathrm{act}}$。第一级chunk-AABB测试减少磁盘加载范围，第二级anchor-frustum测试减少MLP展开和光栅化范围。两级剔除分别服务外存I/O和GPU计算，是第三章\texttt{FrustumCuller}与Chunk Memory Manager耦合的原因。
 
 \subsection{工程落点、系统约束与图示建议}
@@ -281,6 +306,7 @@ R(\Theta_{\mathrm{anchor}},\Theta_{\mathrm{MLP}},\mathbf{T}_{cw}^{k}),
 I_k,D_k
 \right).
 \end{equation}
+式中，$\Theta_{\mathrm{anchor}}$表示锚点级可学习参数，$\Theta_{\mathrm{MLP}}$表示共享MLP权重；$\mathcal{K}$为关键帧集合；$k$为关键帧索引；$R(\cdot)$为由锚点展开、光栅化和Alpha混合组成的可微渲染函数；$\mathbf{T}_{cw}^{k}$为第$k$个关键帧的世界到相机位姿；$I_k$和$D_k$分别为该关键帧的RGB图像和深度监督；$\mathcal{L}$为图像和深度联合损失。
 位姿$\mathbf{T}_{cw}^{k}$同时影响三件事：视锥与chunk AABB的相交关系、锚点投影位置、渲染图像与观测图像的对齐。因此，前端位姿误差会通过可微渲染链路影响地图更新。第三章通过\texttt{SLAMSystemInterface}抽象前端，使高斯后端只依赖位姿和关键帧数据，而不绑定具体跟踪算法。
 
 \subsection{关键帧窗口决定训练工作集}
@@ -292,6 +318,7 @@ I_k,D_k
 \bigcup_{k\in\mathcal{K}_{w}(t)}
 \mathcal{C}_{\mathrm{vis}}(k).
 \end{equation}
+式中，$\mathcal{C}_{\mathrm{win}}(t)$表示时刻$t$局部训练窗口需要加载或保护的chunk集合；$\mathcal{K}_{w}(t)$为当前局部关键帧窗口；$\mathcal{C}_{\mathrm{vis}}(k)$为关键帧$k$视锥可见的chunk集合；$\bigcup$表示对窗口内所有关键帧的可见chunk取并集。
 该集合解释了为什么active chunk不能只由当前帧决定。若关键帧采样器选择了历史局部窗口中的关键帧，其可见chunk也必须在GPU中可用，否则训练迭代会缺失地图状态。第三章的Mapper和关键帧采样器因此共同决定当前工作集。
 
 \subsection{回环操作扩大保护集合}
@@ -303,6 +330,7 @@ I_k,D_k
 \bigcup_{k\in\mathcal{K}_{\mathrm{loop}}}
 \mathcal{C}_{\mathrm{vis}}(k).
 \end{equation}
+式中，$\mathcal{C}_{\mathrm{loop}}$表示回环优化期间需要保护的chunk集合；$\mathcal{K}_{\mathrm{loop}}$为受回环约束影响的关键帧集合；$\mathcal{C}_{\mathrm{vis}}(k)$为关键帧$k$对应的可见chunk集合。
 在回环优化期间，$\mathcal{C}_{\mathrm{loop}}$应被加入$\mathcal{C}_{\mathrm{prot}}$，避免LRU把正在参与一致性修正的块淘汰。该约束解释了第三章中LoopClosingBA需要暂停普通帧接收、临时扩大内存上限并保护相关chunk的设计。
 
 \subsection{工程落点、系统约束与图示建议}
@@ -323,12 +351,14 @@ I_k,D_k
 =
 \{a_i\in\mathcal{A}\mid c(a_i)\in\mathcal{C}_{\mathrm{act}}(t)\}.
 \end{equation}
+式中，$\mathcal{A}_{\mathrm{act}}(t)$表示时刻$t$由active chunk决定的GPU候选锚点集合；$\mathcal{A}$为全局锚点集合；$a_i$表示第$i$个锚点；$c(a_i)$表示锚点$a_i$所属chunk；$\mathcal{C}_{\mathrm{act}}(t)$为时刻$t$的active chunk集合。
 经过anchor级视锥剔除后得到可见锚点集合
 \begin{equation}
 \mathcal{A}_{\mathrm{vis}}(t)
 =
 \{a_i\in\mathcal{A}_{\mathrm{act}}(t)\mid a_i\ \text{passes frustum test}\}.
 \end{equation}
+式中，$\mathcal{A}_{\mathrm{vis}}(t)$表示时刻$t$实际参与MLP展开的可见锚点集合；``passes frustum test''表示锚点通过相机视锥、深度范围和屏幕投影范围测试。
 最终渲染图元集合为
 \begin{equation}
 \mathcal{G}_{\mathrm{child}}(t)
@@ -336,6 +366,7 @@ I_k,D_k
 \bigcup_{a_i\in\mathcal{A}_{\mathrm{vis}}(t)}
 \{g_i^1,\dots,g_i^K\}.
 \end{equation}
+式中，$\mathcal{G}_{\mathrm{child}}(t)$表示时刻$t$送入渲染器的子高斯集合；$g_i^k$表示由锚点$a_i$展开得到的第$k$个子高斯；$K$为每个锚点的子高斯数量；$\bigcup$表示对所有可见锚点生成的子高斯取并集。
 这三个集合分别对应第三章中的chunk管理、锚点张量切片和MLP展开结果。
 
 \subsection{只压缩或只分块的不足}
@@ -344,12 +375,14 @@ I_k,D_k
 \begin{equation}
 M_{\mathrm{GPU}}=O(N_A),
 \end{equation}
+式中，$M_{\mathrm{GPU}}$表示GPU中常驻地图状态的显存复杂度；$N_A$为全局锚点数量；$O(N_A)$表示显存随锚点数量线性增长。
 只是在常数项上小于标准3DGS。长轨迹下$N_A$仍会持续增长，最终触及GPU上限。若只采用chunk外存而不做锚点压缩，GPU常驻复杂度可变为$O(N_{\mathrm{act}})$，但单块文件和I/O带宽由完整高斯参数及优化器状态决定：
 \begin{equation}
 M_{\mathrm{chunk}}^{\mathrm{std}}
 \approx
 3B_G n_c,
 \end{equation}
+式中，$M_{\mathrm{chunk}}^{\mathrm{std}}$表示标准逐高斯表示下单个chunk的训练态存储近似；$B_G$为单个高斯参数字节数；$n_c$为chunk $c$中的高斯或等价图元数量；系数3近似表示参数本体、一阶矩和二阶矩三份状态。
 其中系数3近似来自参数、一阶矩和二阶矩。块越大，I/O延迟越高；块越小，调度频率越高。因此，只分块会缓解显存上限，但不能充分降低块内冗余和I/O压力。
 
 耦合设计同时改变两个量：锚点压缩降低单元字节数$B_A$，chunk管理限制常驻数量$N_{\mathrm{act}}$。其GPU训练态主项可写为
@@ -362,6 +395,7 @@ M_{\mathrm{MLP}}
 +
 M_{\mathrm{render}}(KN_{\mathrm{vis}}),
 \end{equation}
+式中，$M_{\mathrm{GPU}}^{\mathrm{Scaffold\text{-}ChunGS}}$表示本文系统训练态GPU显存主项；$B_A$为单个锚点及其优化状态的平均字节数；$N_{\mathrm{act}}$为GPU active/resident锚点数量；$M_{\mathrm{MLP}}$为共享MLP显存；$M_{\mathrm{render}}(KN_{\mathrm{vis}})$为由$K N_{\mathrm{vis}}$个子高斯产生的渲染缓存显存；$N_{\mathrm{vis}}$为可见锚点数量。
 其中$N_{\mathrm{vis}}\leq N_{\mathrm{act}}\ll N_A$。该式体现了本文系统设计的核心：总地图规模、GPU常驻规模和单帧渲染规模被拆分到三个不同粒度上控制。
 
 \subsection{子高斯动态展开的必要性}
@@ -372,6 +406,7 @@ M_{\mathrm{render}}(KN_{\mathrm{vis}}),
 \text{scheduling unit}=c,\qquad
 \text{rendering unit}=g_i^k.
 \end{equation}
+式中，$a_i$表示锚点级存储单元，$c$表示chunk级调度单元，$g_i^k$表示由锚点$a_i$展开的第$k$个子高斯渲染单元。该式概括了本文系统中存储、调度和渲染三种粒度的边界。
 因此，子高斯不是额外复杂度，而是连接压缩存储和可微渲染的运行时接口。
 
 \subsection{工程落点、系统约束与图示建议}

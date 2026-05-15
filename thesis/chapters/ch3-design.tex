@@ -3,723 +3,435 @@
 % ===========================================================================
 \chapter{系统设计与实现}
 
-本章详细阐述\ScaffoldChunGS 系统的整体架构设计与各核心模块的实现。首先给出系统总体数据流，然后依次剖析锚点压缩表示、分块外存管理、渲染与训练三大子系统的设计决策与技术细节。
+第二章给出了\ScaffoldChunGS 的理论约束：全局地图可以随轨迹增长，但GPU只能承载局部工作集；锚点适合作为长期存储单元，子高斯适合作为渲染单元，chunk适合作为空间调度单元。本章在该约束下描述系统实现。章节组织不按模块清单展开，而围绕数据流、生命周期和调度关系展开，核心主线为``块级调度、锚点级存储、子高斯级渲染''。
 
-\section{系统总体架构}
+在工程实现中，系统由C++17、CUDA和LibTorch构成。SLAM前端提供位姿和MappingOperation，Mapper线程将输入帧转化为关键帧和训练任务，GaussianModel维护GPU常驻锚点张量与磁盘chunk文件，AnchorMLP在渲染时把可见锚点展开为子高斯，ScaffoldRenderer执行可微光栅化并将图像损失反传至锚点和MLP。系统扩展能力来自三个解耦：全局地图规模由磁盘chunk承载，GPU显存由active chunk set约束，单帧渲染开销由可见锚点和子高斯数量决定。
 
-\subsection{总体数据流}
+\section{总体架构：从帧流到可恢复地图状态}
 
-\ScaffoldChunGS 的处理流程如图\ref{fig:architecture}所示：
+\subsection{运行时数据流}
+
+\ScaffoldChunGS 的运行时不是一条静态模块链，而是一组围绕地图状态闭环更新的数据流。输入图像首先进入\texttt{SLAMSystemInterface}，前端返回当前帧位姿$\mathbf{T}_{cw}$，并在产生关键帧、局部BA或回环时向MappingOperation队列写入操作。Mapper线程从帧队列和操作队列中取出数据，将关键帧写入\texttt{GaussianScene}，再驱动\texttt{GaussianModel}完成锚点增量、chunk加载、渲染训练和外存淘汰。每次训练迭代只访问由当前关键帧视锥和训练窗口确定的active chunk set，而不是遍历完整地图。
+
+\begin{figure}[htbp]
+\centering
+\fbox{%
+\begin{minipage}{0.94\textwidth}
+\centering
+\vspace{4pt}
+\textbf{Frame Stream}\\
+$\downarrow$ \\
+\texttt{SLAMSystemInterface}: pose + MappingOperation\\
+$\downarrow$ \\
+\texttt{ScaffoldMapper}: frame queue + operation dispatch\\
+$\downarrow$ \\
+\texttt{GaussianScene}: keyframe set \qquad
+\texttt{GaussianModel}: anchor tensors + chunk metadata\\
+$\downarrow$ \\
+active chunk query $\rightarrow$ async load/evict $\rightarrow$ GPU resident anchors\\
+$\downarrow$ \\
+anchor culling $\rightarrow$ \texttt{AnchorMLP} expansion $\rightarrow$ child Gaussians\\
+$\downarrow$ \\
+\texttt{ScaffoldRenderer}: differentiable rasterization\\
+$\downarrow$ \\
+loss backward $\rightarrow$ Adam state update $\rightarrow$ anchor grow/prune $\rightarrow$ chunk persistence
+\vspace{4pt}
+\end{minipage}}
+\caption{系统运行时数据流。图中每个节点对应真实代码对象，箭头表示数据对象的生命周期变化，而不是单纯函数调用顺序。}
+\label{fig:ch3_runtime_flow}
+\end{figure}
+
+图\ref{fig:ch3_runtime_flow}中的关键约束是：渲染器从不直接面向全局地图工作。它接收的是经过chunk调度和anchor级视锥剔除后的可见锚点切片；子高斯只在一次渲染调用中临时存在；优化器状态与锚点张量绑定，在chunk换出时一同序列化。这种数据边界使系统在长序列运行时保持显存稳定。
+
+\subsection{线程、数据结构与代码边界}
+
+系统中存在三类并发关系。第一，Mapper启动后创建后台线程，执行两阶段建图循环；外部输入通过\texttt{processFrame}写入帧队列，并由\texttt{mutex\_frame\_}保护。第二，Viewer创建独立显示线程，Mapper通过双缓冲\texttt{ViewerFrameData}提交显示快照，Viewer只读取副本，不直接访问训练中的模型。第三，chunk读写并不是单独常驻I/O线程，而是在\texttt{loadChunks}和\texttt{saveChunks}中使用\texttt{std::async}和\texttt{future}按批并行执行，从而缩短训练线程等待磁盘的时间。
+
+\begin{table}[htbp]
+\centering
+\caption{运行时线程、核心数据结构与代码位置}
+\label{tab:runtime_threads}
+\begin{tabular}{p{3.0cm}p{5.2cm}p{4.8cm}}
+\toprule
+\textbf{执行上下文} & \textbf{主要数据结构} & \textbf{代码位置} \\
+\midrule
+Mapper线程 & 帧队列、MapperState、GaussianScene、GaussianModel & \texttt{mapper\_core.cpp}，\texttt{gaussian\_mapper.h} \\
+SLAM操作队列 & MappingOperation、KFTuple、操作队列、队列互斥锁 & \texttt{slam\_system.h}，\texttt{builtin\_adapter.cpp} \\
+Chunk并行I/O & ChunkData、磁盘chunk集合、GPU resident chunk集合、future批任务 & \texttt{model\_memory.cpp}，\texttt{model\_storage.cpp} \\
+GPU训练路径 & anchor张量、Adam状态、AnchorData、ExpandedGaussians、RenderOutput & \texttt{src/model}，\texttt{src/rendering}，\texttt{src/training} \\
+Viewer线程 & ViewerFrameData双缓冲、frame mutex、close condition variable & \texttt{gaussian\_viewer.cpp} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表\ref{tab:runtime_threads}说明，本章后续每个系统过程都可以落到真实代码结构：数据进入Mapper线程，形成关键帧和操作；地图状态在GaussianModel内以锚点张量和chunk元数据存在；训练过程生成子高斯并执行反传；Viewer线程只消费快照。这样的线程边界避免了渲染显示、SLAM输入和地图训练之间的直接写冲突。
+
+\subsection{图示设计建议}
+
+本节建议绘制一张黑白系统架构图。图中上层为执行上下文：Input Thread、Mapper Thread、Async I/O Tasks、GPU Kernels、Viewer Thread；下层为数据对象：Frame、MappingOperation、GaussianKeyframe、Anchor Tensor、ChunkData、ExpandedGaussians、RenderOutput。箭头应标注数据类型，例如``pose + image''、``active chunk ids''、``visible anchor slice''和``Adam state''。该图用于替代普通模块框图，重点表达数据流和线程边界。
+
+\section{锚点级地图状态：张量布局与增量生命周期}
+
+\subsection{Anchor tensor layout}
+
+锚点是系统的长期地图单元。一个锚点不是单个点，而是\texttt{GaussianModel}中多组行对齐张量的同一行。设当前GPU常驻锚点数为$N$，每个锚点展开$K$个子高斯，特征维度为$D$，则主要张量布局如表\ref{tab:anchor_tensor_layout}所示。所有字段都以行号作为局部索引，\texttt{anchor\_ids\_}提供跨chunk换入换出的全局身份，\texttt{anchor\_chunk\_ids\_}提供chunk调度所需的空间归属。
+
+\begin{table}[htbp]
+\centering
+\caption{GPU常驻锚点张量布局}
+\label{tab:anchor_tensor_layout}
+\begin{tabular}{p{3.5cm}p{2.6cm}p{6.4cm}}
+\toprule
+\textbf{字段} & \textbf{形状} & \textbf{生命周期含义} \\
+\midrule
+\texttt{anchor\_} & $[N,3]$ & 锚点中心位置，参与投影、chunk编码和梯度更新 \\
+\texttt{offset\_} & $[N,K,3]$ & 子高斯局部偏移，渲染时与基础尺度组合生成子高斯中心 \\
+\texttt{anchor\_feat\_} & $[N,D]$ & MLP输入特征，是压缩外观和几何细节的主要载体 \\
+\texttt{anchor\_scaling\_} & $[N,6]$ & 前3维控制offset范围，后3维控制子高斯基础尺度 \\
+\texttt{anchor\_rotation\_} & $[N,4]$ & 基础四元数旋转 \\
+\texttt{anchor\_opacity\_} & $[N,1]$ & 基础不透明度，用于剪枝统计和展开初始化 \\
+\texttt{anchor\_chunk\_ids\_} & $[N]$ & 64-bit chunk编码，决定该行属于哪个外存块 \\
+\texttt{anchor\_ids\_} & $[N]$ & 全局锚点ID，保证换入换出后的身份连续性 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+这种布局服务两个工程需求。其一，chunk换出时可以用布尔mask在所有张量上同步切片，形成\texttt{ChunkData}；其二，渲染时可以用可见mask一次性得到\texttt{AnchorData}，再送入AnchorMLP展开函数。因此，张量行对齐是锚点压缩与chunk调度能够耦合的基础。
+
+\subsection{锚点从创建到剪枝的生命周期}
+
+锚点生命周期由初始化、增量添加、稠密化和chunk I/O共同维护。初始建图阶段，Mapper从关键帧深度生成点云，模型按体素大小将点云聚合为锚点，并初始化特征、offset、尺度、旋转和不透明度。增量建图阶段，新关键帧产生的新点云通过\texttt{addAnchors}进入模型，系统进行体素重复过滤，为新增锚点分配递增全局ID，并通过\texttt{computeChunkIds}写入chunk归属。
+
+训练过程中，梯度累积张量、不透明度累积张量和可见计数记录锚点贡献。周期性稠密化由\texttt{adjustAnchors}触发：高梯度区域执行\texttt{anchorGrowing}生成新锚点，低不透明度区域执行\texttt{anchorPruning}移除弱贡献锚点。新增或删除锚点会改变张量行数，因此优化器状态必须同步扩展、剪裁或重建。代码中\texttt{catAnchorsToOptimizer}和\texttt{trainingSetup}负责将新增锚点纳入Adam参数组，并为新增行初始化一阶、二阶矩。
 
 \begin{figure}[htbp]
 \centering
 \fbox{%
 \begin{minipage}{0.92\textwidth}
 \centering
-\vspace{6pt}
-\textbf{Sensor Data (Mono / Stereo / RGB-D)} \\
+\vspace{4pt}
+Point/Depth Seeds $\rightarrow$ voxel aggregation $\rightarrow$ Anchor Rows\\
 $\downarrow$ \\
-\textbf{SLAMSystemInterface}（trackMono/Stereo/RGBD）\\
+assign \texttt{anchor\_ids\_} + \texttt{anchor\_chunk\_ids\_}\\
 $\downarrow$ \\
-\textbf{MappingOperation Queue}（LocalBA / LoopBA / ScaleRefinement）\\
+visible training $\rightarrow$ gradient/opacity statistics\\
 $\downarrow$ \\
-\textbf{ScaffoldMapper -- Two-Phase Loop} \\
-\qquad Phase 1: 积累 KFs $\to$ 批量种子 $\to$ 初训 \\
-\qquad Phase 2: combineMappingOperations() $\to$ 分发调度 \\
+\texttt{anchorGrowing} for high-gradient regions \quad
+\texttt{anchorPruning} for low-opacity rows\\
 $\downarrow$ \\
-\textbf{DepthEstimator}（SGBM 双目 / TensorRT 单目）$\to$ \textbf{GaussianKeyframe} \\
-$\downarrow$ \\
-\textbf{FrustumCuller}（两级可见性剔除）\\
-$\downarrow$ \\
-\textbf{Chunk Memory Manager}（LRU 加载 / 淘汰）\\
-$\downarrow$ \\
-\textbf{AnchorMLP}（展开锚点 $\to$ 子高斯）\\
-$\downarrow$ \\
-\textbf{CUDA Rasterizer}（$\alpha$ 混合渲染）\\
-$\downarrow$ \\
-\textbf{Loss Computation}（L1 + SSIM + Depth + Isotropic）\\
-$\downarrow$ \\
-\textbf{Backward + Adam Step}（反向传播与参数更新）\\
-$\downarrow$ \\
-\textbf{Anchor Growing / Pruning}（周期性稠密化）
-\vspace{6pt}
-\end{minipage}
-}
-\caption{系统总体数据流图}
-\label{fig:architecture}
+optimizer state extension/pruning $\rightarrow$ chunk persistence
+\vspace{4pt}
+\end{minipage}}
+\caption{锚点生命周期。锚点行的创建、增长、剪枝和优化器状态维护必须同步，否则chunk换入换出后无法恢复训练状态。}
+\label{fig:anchor_lifecycle}
 \end{figure}
 
-图\ref{fig:architecture}给出了系统的顺序处理链路。为了避免总体架构停留在模块罗列层面，本系统在工程实现中进一步将数据对象划分为四类：第一类是输入观测，包括RGB图像、双目右图或深度图；第二类是SLAM前端产生的几何约束，包括相机位姿$T_{cw}$、关键帧和回环变换；第三类是高斯地图状态，包括锚点张量、chunk编号、优化器状态和磁盘块文件；第四类是训练闭环中的中间结果，包括可见锚点掩码、展开后的子高斯、渲染图像和损失值。这样的对象划分使后续模块不是简单串联，而是围绕“位姿约束驱动可微渲染，可微渲染反向更新锚点地图，chunk管理限制GPU常驻规模”这一闭环协同工作。
+\subsection{从锚点存储到子高斯生成}
 
-\subsection{模块划分与技术栈}
+渲染阶段不会直接把\texttt{GaussianModel}中的全部锚点送入光栅化器。流程为：\texttt{cullVisibleAnchors}先返回可见锚点mask，\texttt{getVisibleAnchors}将行对齐张量切片为\texttt{AnchorData}，随后\texttt{AnchorMLP::expandAnchorsToGaussians}根据锚点特征、观察方向、距离和可选外观嵌入输出\texttt{ExpandedGaussians}。其输出包含\texttt{xyz}、\texttt{color}、\texttt{opacity}、\texttt{scaling}、\texttt{rotation}和\texttt{child\_mask}。其中\texttt{child\_mask}会过滤低不透明度子高斯，使实际进入渲染器的图元数小于$K|\mathcal{A}_{\mathrm{vis}}|$。
 
-系统由十大核心模块组成：
+该设计使长期地图状态和渲染图元状态分离：chunk文件保存的是锚点行与优化器状态；子高斯是当前视角、当前迭代、当前可见mask下的临时计算结果。反向传播时，梯度从渲染损失经子高斯属性回到MLP权重和可见锚点张量，而不是写回一个全局子高斯表。
 
-\begin{table}[htbp]
-\centering
-\caption{系统模块划分与技术栈}
-\label{tab:modules}
-\begin{tabular}{lp{5cm}l}
-\toprule
-\textbf{模块} & \textbf{功能} & \textbf{关键依赖} \\
-\midrule
-锚点场景表示 & 体素化、MLP解码、生长/剪枝 & LibTorch, CUDA \\
-分块内存管理 & 空间分块、LRU淘汰、异步I/O & Eigen3, STL threading \\
-渲染子系统 & 视锥剔除、双后端光栅化 & CUDA, Eigen3 \\
-训练子系统 & 损失计算、关键帧采样、调度 & LibTorch, OpenCV \\
-深度估计 & 单目TensorRT/双目SGBM立体深度 & TensorRT, OpenCV \\
-视觉跟踪 & ORB特征+FLANN匹配+PnP+RANSAC & OpenCV, Eigen3 \\
-回环闭合 & k-means BoVW + SE(3)位姿图优化 & OpenCV, Eigen3 \\
-SLAM系统接口 & SLAMSystemInterface + MappingOperation队列 & LibTorch, STL \\
-SLAM Mapper & 两阶段DiskChunGS对齐管线 & LibTorch, STL threading \\
-实时可视化 & GLFW+OpenGL+ImGui交互式渲染 & GLFW, OpenGL \\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{图示设计建议}
 
-第二章末尾已经给出相关技术基础与本章模块的对应关系，因此本节不再重复列出理论对象映射表，而是从工程实现角度说明各模块的数据结构、接口边界和调度关系。
+本节建议绘制一张anchor tensor layout图和一张anchor生命周期图。layout图横向画多条等长张量行，使用同一行号$i$连接\texttt{anchor\_}、\texttt{offset\_}、\texttt{anchor\_feat\_}、\texttt{anchor\_chunk\_ids\_}和Adam状态。生命周期图使用状态节点``Seeded''、``Resident''、``Visible/Optimized''、``Grown''、``Pruned''、``Serialized''，箭头标注具体函数名。
 
-\textbf{图示设计建议：}本节可保留图\ref{fig:architecture}作为系统总览图。若后续重新绘制正式图片，建议将其设计为“模块—数据对象”双层结构：上层展示SLAM前端、Mapper、GaussianModel、Renderer、Trainer与Viewer；下层展示Frame、GaussianKeyframe、MappingOperation、Anchor Tensor、ChunkData、RenderOutput和Loss等数据对象。图中箭头不只表示调用顺序，还应标注传递的数据类型，以突出系统工程结构。
+\section{块级外存调度：active set、异步I/O与优化连续性}
 
-\textbf{技术栈选型理由：}
-\begin{itemize}
-    \item \textbf{C++17：}提供高性能计算、内存精细控制与CUDA无缝互操作，避免Python运行时开销。
-    \item \textbf{LibTorch（PyTorch C++ API）：}提供与Python一致的张量运算、`torch::nn` MLP模块与Adam优化器实现，使模型开发与调试体验统一。
-    \item \textbf{CUDA：}实现可微高斯光栅化核心kernel，充分利用GPU并行能力。
-    \item \textbf{Eigen3：}提供高效的线性代数运算（SE(3)位姿矩阵、AABB包围盒、视锥平面提取）。
-    \item \textbf{OpenCV：}处理图像I/O与YAML配置文件解析。
-\end{itemize}
+\subsection{Chunk ID、active chunk与GPU resident set}
 
-\section{锚点压缩场景表示模块}
-
-\subsection{体素化锚点初始化}
-
-锚点初始化的入口为`GaussianModel::initializeFromPoints`（实现于src/model/model\_core.cpp）。算法流程如下：
-
-给定输入点云$\mathcal{P}=\{(\mathbf{p}_j,\mathbf{c}_j)\}_{j=1}^{M}$，系统首先按照锚点体素大小$v_s$将连续空间离散化。第$j$个点所属的体素坐标为
+Chunk是系统的空间调度单元。锚点位置先映射到\texttt{ChunkCoord}，再编码为64-bit整数。设GPU中当前张量包含的chunk集合为$\mathcal{C}_{\mathrm{res}}$，磁盘中已持久化的chunk集合为$\mathcal{C}_{\mathrm{disk}}$，当前训练需要的active集合为$\mathcal{C}_{\mathrm{act}}$，则系统每次训练前执行的核心关系为
 \begin{equation}
-\mathbf{v}_j=\left\lfloor\frac{\mathbf{p}_j}{v_s}\right\rfloor ,
-\end{equation}
-非空体素$\mathbf{v}_i$对应的锚点位置取体素中心：
-\begin{equation}
-\mathbf{x}_i^a=v_s\mathbf{v}_i+\frac{v_s}{2}\mathbf{1}.
-\end{equation}
-若该体素中包含点集合$\mathcal{P}_i$，其初始颜色特征由体素内颜色均值给出：
-\begin{equation}
-\bar{\mathbf{c}}_i=\frac{1}{|\mathcal{P}_i|}\sum_{(\mathbf{p}_j,\mathbf{c}_j)\in\mathcal{P}_i}\mathbf{c}_j.
-\end{equation}
-这三式对应代码中的体素哈希、体素中心生成和颜色聚合过程。与直接保留原始点相比，体素中心初始化使锚点分布与后续chunk划分使用同一空间尺度体系，便于在大场景中进行稳定的块级调度。
-
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item \textbf{输入：}稠密点云$\mathcal{P}=\{(\mathbf{p}_j,\mathbf{c}_j)\}_{j=1}^{M}$（来自RGB-D初始帧或SFM前端）。
-    \item 以 voxel\_size（典型值0.01 m）为步长对$\mathcal{P}$进行均匀体素化。
-    \item 对每个非空体素，计算该体素内所有点的平均颜色$\bar{\mathbf{c}}$。
-    \item \textbf{创建锚点：}
-        \begin{itemize}
-            \item $\mathbf{x}_i^a\leftarrow$ 体素中心坐标
-            \item $\mathbf{f}_i^a\leftarrow$ 以平均颜色$\bar{\mathbf{c}}$初始化特征向量（通过简单线性映射至特征维度$D$）
-            \item $\mathbf{o}_i^k\leftarrow$ 随机初始化$K=5$个子偏移
-            \item $\mathbf{s}_i^a\leftarrow[0.01,0.01,0.01,\,s_v,s_v,s_v]$（前半控制offset范围，后半控制子高斯初始尺度$s_v$=体素尺寸）
-        \end{itemize}
-    \item 所有锚点参数存储为扁平GPU张量（torch::Tensor），索引统一的锚点id。
-\end{enumerate}
-
-\textbf{设计决策：}采用体素中心而非原始点位置作为锚点坐标，确保锚点在空间上的均匀覆盖，避免在点云稀疏区域出现空洞。
-
-在代码层面，一个锚点不是单个三维点，而是一组可学习张量的同一行。表\ref{tab:anchor_tensors}列出了\texttt{GaussianModel}内部主要张量的形状与含义，其中$N$为当前GPU中常驻锚点数量，$K$为每个锚点展开的子高斯数量，$D$为锚点特征维度。
-
-\begin{table}[htbp]
-\centering
-\caption{锚点模型核心张量及其工程含义}
-\label{tab:anchor_tensors}
-\begin{tabular}{lll}
-\toprule
-\textbf{张量字段} & \textbf{形状} & \textbf{工程含义} \\
-\midrule
-\texttt{anchor\_} & $[N,3]$ & 锚点中心位置$\mathbf{x}_i^a$ \\
-\texttt{offset\_} & $[N,K,3]$ & 每个锚点的$K$个局部子偏移$\mathbf{o}_i^k$ \\
-\texttt{anchor\_feat\_} & $[N,D]$ & 供MLP解码使用的锚点隐特征$\mathbf{f}_i^a$ \\
-\texttt{anchor\_scaling\_} & $[N,6]$ & 前3维控制offset范围，后3维控制基础尺度 \\
-\texttt{anchor\_rotation\_} & $[N,4]$ & 基础旋转四元数 \\
-\texttt{anchor\_opacity\_} & $[N,1]$ & 基础不透明度参数 \\
-\texttt{anchor\_chunk\_ids\_} & $[N]$ & 锚点所属chunk的64-bit编码 \\
-\texttt{anchor\_ids\_} & $[N]$ & 跨加载/淘汰过程保持不变的全局锚点ID \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{增量锚点添加}
-
-在SLAM运行过程中，新观测到的区域产生新点云时，调用`GaussianModel::addAnchors`（model\_core.cpp）增量添加锚点：
-
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 将新点云体素化，筛选出未覆盖的体素。
-    \item 以现有锚点位置为基准，执行半径过滤（radius-based duplicate filtering）：若新体素中心与任一现有锚点的距离小于 voxel\_size / 2，则跳过。
-    \item 对通过筛选的新锚点，分配全局唯一递增ID，追加至各参数张量的末尾。
-\end{enumerate}
-
-\subsection{视角条件MLP解码器}
-
-MLP解码器是锚点压缩的核心组件（实现于src/model/model\_mlp.cpp，类定义于include/scaffold\_chunks/anchor\_mlp.h）。三个独立MLP的输入$\mathbf{z}$完全相同：
-
-\begin{equation}
-\mathbf{z} = [\,\mathbf{f}_i^a\,|\,\mathbf{d}_{\text{view}}\,|\,\|\mathbf{x}_i^a - \mathbf{c}\|\,]
-\end{equation}
-
-其中$\mathbf{c}$为相机中心，$\mathbf{d}_{\text{view}}$为归一化视线方向，$\|\mathbf{x}_i^a - \mathbf{c}\|$为锚点至相机的欧氏距离。
-
-需要说明的是，代码中距离项由\texttt{add\_opacity\_dist}、\texttt{add\_cov\_dist}和\texttt{add\_color\_dist}三个配置开关分别控制；默认配置三者均开启，因此三路MLP均使用$D+3+1$维输入。若关闭某一路距离输入，对应MLP的输入维度会退化为$D+3$，但整体展开接口保持不变。
-
-\textbf{图示设计建议：}本小节适合绘制“锚点到子高斯的视角条件展开结构图”。图中左侧为一个可见锚点，标注\texttt{anchor\_}、\texttt{anchor\_feat\_}、\texttt{offset\_}和\texttt{anchor\_scaling\_}；中间为三路MLP，分别标注\texttt{mlp\_opacity\_}、\texttt{mlp\_cov\_}和\texttt{mlp\_color\_}；右侧为展开后的$K$个子高斯，标注输出字段\texttt{xyz}、\texttt{color}、\texttt{opacity}、\texttt{scaling}、\texttt{rotation}和\texttt{mask}。该图用于解释\texttt{AnchorMLP::expandAnchorsToGaussians}的输入输出关系，不需要重复第二章中Scaffold-GS的原理推导。
-
-\textbf{MLP结构：}
-
-\begin{itemize}
-    \item \textbf{mlp\_opacity\_}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{K}\to\operatorname{Tanh}$。输出$K$个tanh值，经sigmoid转换后作为$K$个子高斯的不透明度。
-    \item \textbf{mlp\_cov\_}：$\mathbb{R}^{D+3+1}\to\mathbb{R}^{D}\to\mathbb{R}^{7K}$。输出$K$组$(\Delta s_x,\Delta s_y,\Delta s_z,\,q_w,q_x,q_y,q_z)$——3个尺度残差（与基础尺度相加）及4个旋转四元数分量（归一化后形成单位四元数）。
-    \item \textbf{mlp\_color\_}：$\mathbb{R}^{D+3+1+A}\to\mathbb{R}^{D}\to\mathbb{R}^{3K}\to\operatorname{Sigmoid}$。若配置了外观嵌入维度$A>0$，则将每相机的外观嵌入向量拼接至输入。
-\end{itemize}
-
-三路MLP的输出维度可写为
-\begin{equation}
-F_{\alpha}(\mathbf{z}_i)\in\mathbb{R}^{K},\qquad
-F_{\Sigma}(\mathbf{z}_i)\in\mathbb{R}^{7K},\qquad
-F_{c}(\mathbf{z}_i)\in\mathbb{R}^{3K}.
-\end{equation}
-其中$F_{\alpha}$对应不透明度解码，$F_{\Sigma}$对应尺度残差与旋转四元数解码，$F_c$对应RGB颜色解码。子高斯中心由锚点中心与局部偏移共同决定：
-\begin{equation}
-\mathbf{x}_i^k
+\mathcal{C}_{\mathrm{miss}}
 =
-\mathbf{x}_i^a+\mathbf{o}_i^k\odot\mathbf{s}_{i,\mathrm{offset}}^a,\quad k=1,\dots,K,
+\mathcal{C}_{\mathrm{act}}
+\cap
+\mathcal{C}_{\mathrm{disk}}
+\setminus
+\mathcal{C}_{\mathrm{res}}.
 \end{equation}
-其中$\mathbf{s}_{i,\mathrm{offset}}^a$对应\texttt{anchor\_scaling\_}的前三维。该式体现了Scaffold-GS\cite{lu2024scaffoldgs}的核心思想：系统常驻存储锚点和偏移，只有在当前视角需要渲染时才展开为子高斯。
+式中，$\mathcal{C}_{\mathrm{miss}}$表示本次训练前需要从磁盘换入的chunk集合；$\mathcal{C}_{\mathrm{act}}$表示当前帧、训练窗口或回环操作需要访问的active chunk集合；$\mathcal{C}_{\mathrm{disk}}$表示已经持久化到磁盘的chunk集合；$\mathcal{C}_{\mathrm{res}}$表示当前已经常驻GPU张量中的chunk集合；$\cap$表示集合交集，$\setminus$表示集合差。
+\texttt{loadChunks}只加载$\mathcal{C}_{\mathrm{miss}}$，并在加载前估计即将进入GPU的锚点数。如果加载后可能超过GPU常驻上限，系统先调用\texttt{evictExcessChunks}，从非保护chunk中选择LRU候选换出。
 
-\textbf{可选组件 —— mlp\_feature\_bank\_：}当 use\_feat\_bank 开启时，对锚点特征进行3分辨率注意力融合\cite{lu2024scaffoldgs}，提升视角适应能力。该功能默认关闭以控制参数总量。
-
-\textbf{AnchorMLP::expandAnchorsToGaussians} 方法的处理流程：
-
-\begin{enumerate}[label=\arabic*.,leftmargin=2em,itemsep=0pt,topsep=0pt]
-    \item 输入：可见锚点子集 $[V, D]$ + 相机中心 $\mathbf{c}$
-    \item 计算视线方向 $\mathbf{d}_{\text{view}} = \operatorname{normalize}(\mathbf{x}_a - \mathbf{c})$
-    \item 计算逐锚点距离 $d_{\text{dist}} = \|\mathbf{x}_a - \mathbf{c}\|$
-    \item 拼接输入 $\mathbf{z} = [\mathbf{f}_a \mid \mathbf{d}_{\text{view}} \mid d_{\text{dist}}] \rightarrow [V, D+4]$
-    \item $\text{opacity\_raw} = \text{mlp\_opacity\_}(\mathbf{z}) \rightarrow [V, K]$
-    \item $\text{cov\_raw} = \text{mlp\_cov\_}(\mathbf{z}) \rightarrow [V, K{\times}7]$
-    \item $\text{color\_raw} = \text{mlp\_color\_}(\mathbf{z}) \rightarrow [V, K{\times}3]$
-    \item 计算子高斯位置：$\mathbf{x}_i^k = \mathbf{x}_i^a + \mathbf{o}_i^k \cdot \mathbf{s}_i^a[:3]$
-    \item 应用激活函数：opacity $\rightarrow$ sigmoid，scale $\rightarrow$ sigmoid，rot $\rightarrow$ normalize
-    \item 生成 $\text{child\_mask}$：$\text{opacity} > 0$ 的子高斯
-    \item 返回 $\text{ExpandedGaussians\{xyz, color, opacity, scaling, rotation, mask\}}$
-\end{enumerate}
-
-\subsection{层级化锚点生长与剪枝}
-
-锚点生长与剪枝实现于src/model/model\_optimization.cpp。
-
-\textbf{生长流程（`anchorGrowing`）：}
-
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 统计每个锚点子偏移的累积梯度$\sum\|\nabla_{\mathbf{o}_i^k}\|$。
-    \item 对梯度超过$\tau_{\text{grad}}=2\times10^{-4}$的锚点，以其高梯度子偏移位置为种子。
-    \item 对种子进行 update\_depth=3 层级的体素细分：
-        \begin{itemize}
-            \item 第0层：体素尺寸$v_s\times\text{update\_init\_factor}=v_s\times100$
-            \item 第$l$层：体素尺寸缩小$\text{update\_hierarchy\_factor}=4$倍
-        \end{itemize}
-    \item 在新体素中心创建新锚点（特征向量零初始化以保持初始稳定性）。
-\end{enumerate}
-
-\textbf{剪枝流程（`anchorPruning`）：}
-
-对平均累积不透明度$\bar{\alpha}_i$低于$\tau_{\alpha}=0.005$的锚点执行剪枝：从所有参数张量中移除对应行，释放GPU内存。
-
-\section{分块外存管理模块}
-
-\subsection{空间分块与编码}
-
-块的坐标系定义于include/scaffold\_chunks/chunk\_types.h。
-
-\textbf{块坐标计算：}
+GPU resident set不是全部地图，而是当前张量中实际保留的锚点行集合：
 \begin{equation}
-c_i = \left\lfloor\frac{x_i}{S_{\text{chunk}}}\right\rfloor,\quad i\in\{x,y,z\}
+\mathcal{A}_{\mathrm{res}}
+=
+\{a_i \mid c(a_i)\in\mathcal{C}_{\mathrm{res}}\}.
 \end{equation}
+式中，$\mathcal{A}_{\mathrm{res}}$表示GPU当前常驻锚点集合；$a_i$表示第$i$个锚点；$c(a_i)$表示锚点$a_i$所属的chunk ID；$\mathcal{C}_{\mathrm{res}}$表示GPU resident chunk集合。该式说明，GPU中的锚点由resident chunk反查得到，而不是由全局地图直接决定。
+渲染使用的可见集合进一步满足$\mathcal{A}_{\mathrm{vis}}\subseteq\mathcal{A}_{\mathrm{res}}$。因此，GPU常驻上限约束的是训练态张量规模，\texttt{cullVisibleAnchors}约束的是单帧展开和光栅化规模。
 
-其中$S_{\text{chunk}}$为块边长（典型值20.0世界单位）。
+\subsection{Active chunk状态机}
 
-\textbf{64-bit Chunk ID编码：}为支持高效哈希与序列化，将三元组$(c_x,c_y,c_z)$编码为单个64-bit整数：
-\begin{equation}
-\text{chunk\_id} = (c_x + 2^{20}) \cdot 2^{42} + (c_y + 2^{20}) \cdot 2^{21} + (c_z + 2^{20})
-\end{equation}
-每轴分配21 bits（含20-bit符号偏移），支持坐标范围$[-1,048,576,\;+1,048,575]$，对应场景规模$\sim$20,000 km（以$S_{\text{chunk}}=20$ m计），远超大场景SLAM需求。
+系统中chunk状态由三组信息共同决定：是否在磁盘集合中，是否在GPU resident set或当前新建张量中，是否被当前帧、训练窗口或回环保护。其生命周期可抽象为图\ref{fig:chunk_state_machine}。
 
-\textbf{AABB包围盒：}每个块维护其轴对齐包围盒（Eigen::Vector3f min/max），用于视锥剔除的快速粗筛。
+\begin{figure}[htbp]
+\centering
+\fbox{%
+\begin{minipage}{0.90\textwidth}
+\centering
+\vspace{4pt}
+New/Resident
+$\xrightarrow{\texttt{saveChunks}}$
+OnDisk
+$\xrightarrow{\texttt{loadChunks}}$
+Loaded/Resident
+$\xrightarrow{\text{visible or loop}}$
+Protected/Active\\[2pt]
+Protected/Active
+$\xrightarrow{\text{access update}}$
+Loaded/Resident
+$\xrightarrow{\texttt{findLRUChunks}}$
+EvictionCandidate
+$\xrightarrow{\texttt{saveAndEvictChunks}}$
+OnDisk
+\vspace{4pt}
+\end{minipage}}
+\caption{Active chunk状态机。只有非保护chunk可以进入淘汰候选；淘汰前先序列化锚点参数、统计量和Adam状态。}
+\label{fig:chunk_state_machine}
+\end{figure}
 
-本系统选择在锚点粒度而不是子高斯粒度上进行分块。原因在于子高斯是由MLP在渲染时临时展开得到的中间结果，并不适合作为长期存储对象；锚点张量则同时包含几何位置、隐特征、偏移、优化器统计量和全局ID，具备完整的持久化语义。因此，chunk的职责不是裁剪某一帧的渲染结果，而是管理“可恢复训练的局部锚点集合”。
+该状态机解释了为什么chunk不会破坏优化连续性。换出不是丢弃地图，而是将\texttt{ChunkData}写入\schun 文件；换入不是重新初始化，而是把锚点张量、统计张量和Adam状态拼接回GPU参数组。只要chunk文件保存了参数与优化状态，局部区域重新进入active set时就能延续之前的训练轨迹。
 
-\subsection{LRU淘汰策略}
+\subsection{异步I/O流水线}
 
-LRU管理器实现于src/model/model\_memory.cpp。
+\texttt{loadChunks}和\texttt{saveChunks}采用批量并行I/O。读取时，系统把待加载chunk ID分批交给\texttt{std::async}任务，每个任务解析一个\schun 文件，主线程通过\texttt{future}收集\texttt{ChunkData}，最后统一拼接到GPU张量。写出时，\texttt{saveChunks}先在当前线程根据chunk mask提取\texttt{ChunkData}，再并行写入磁盘。
 
-\textbf{核心数据结构：}
-\begin{itemize}
-    \item chunks\_loaded\_from\_disk\_：GPU暂存中已加载的块ID张量
-    \item chunks\_on\_disk\_：已写至磁盘的块ID张量
-    \item chunk\_access\_times\_：std::unordered\_map<int64\_t, time\_point>，记录每块的最近访问时刻
-\end{itemize}
+这里的并行粒度是chunk文件，而不是张量元素。原因是单个chunk内部字段较多，包括锚点参数、统计张量和多组Adam矩，逐字段异步会增加同步复杂度；按chunk提交任务可以保持文件原子性和调度语义。代码按硬件并发数限制任务批量，以避免在嵌入式平台上因I/O任务过多挤占训练线程。
 
-设当前GPU中已加载的块集合为$\mathcal{C}_{loaded}$，当前帧或回环优化过程中受到保护的块集合为$\mathcal{C}_{protected}$，块$c$最近访问时间为$t_{\mathrm{last}}(c)$。当GPU锚点数量超过上限$M_{\max}$时，LRU候选集合为
-\begin{equation}
-\mathcal{C}_{cand}=\mathcal{C}_{loaded}\setminus\mathcal{C}_{protected},
-\end{equation}
-优先淘汰满足
-\begin{equation}
-c^{*}=\arg\min_{c\in\mathcal{C}_{cand}}t_{\mathrm{last}}(c)
-\end{equation}
-的块。该准则与DiskChunGS\cite{feldmann2026diskchungs}的大场景外存思想一致，但本系统的淘汰对象是压缩后的anchor块，而不是完整3DGS高斯块，因此单块写入带宽和GPU恢复开销更低。
+\subsection{\schun 文件与Adam状态恢复}
 
-\textbf{淘汰流程（`evictExcessChunks`）：}
-
-\begin{enumerate}[label=\arabic*.,leftmargin=2em,itemsep=0pt,topsep=0pt]
-    \item $\text{protected\_ids} \leftarrow$ 当前帧可见的块ID
-    \item $\text{excess} = \text{当前GPU锚点数} - \text{max\_anchors\_in\_memory}$
-    \item if $\text{excess} \le 0$：return
-    \item $\text{candidates} = \text{loaded\_chunks} \setminus \text{protected\_ids}$ \hfill // 非可见且已加载的块
-    \item 按 $\text{chunk\_access\_times\_}$ 升序排序 $\text{candidates}$
-    \item 选前 $N_{\text{evict}}$ 个块，其中 $N_{\text{evict}} = \text{excess} + 5\% \times \text{max\_anchors\_in\_memory}$
-    \item 对每个选中块：
-    \begin{enumerate}[label=\alph*.,leftmargin=3em,itemsep=0pt,topsep=0pt]
-        \item $\text{saveAndEvictChunk(id)}$：序列化写入磁盘 + 从GPU张量中移除
-        \item 更新 $\text{chunks\_loaded\_from\_disk\_} \;/\; \text{chunks\_on\_disk\_} \;/\; \text{chunk\_anchor\_counts\_}$
-    \end{enumerate}
-\end{enumerate}
-
-\textbf{5\%滞后缓冲区设计：}避免在边界情况下频繁的"淘汰$\to$立即重新加载"震荡。当GPU锚点数降至$0.95\times M_{\max}$以下时，停止额外淘汰。
-
-\textbf{内存压力自动监控（`checkMemoryPressure`）：}
-
-训练循环的每次迭代调用此方法。当当前锚点数超过$M_{\max}$时，自动触发淘汰（无受保护块）。
-
-\textbf{图示设计建议：}本小节适合绘制“Chunk三级存储与生命周期示意图”。图中上层为GPU Active Chunks，标注\texttt{chunks\_loaded\_from\_disk\_}和受保护的可见chunk；中层为CPU侧I/O与调度元数据，标注\texttt{chunk\_access\_times\_}和\texttt{chunk\_anchor\_counts\_}；下层为磁盘中的\texttt{.schun}文件。图中应使用load、serialize、evict、deserialize四类箭头说明\texttt{loadChunks}、\texttt{saveChunks}和\texttt{saveAndEvictChunks}之间的关系，重点表达chunk管理的是可恢复训练状态，而不是临时渲染结果。
-
-\subsection{异步并行块I/O}
-
-块读写使用异步并行I/O以最小化对训练循环的中断：
-
-\begin{itemize}
-    \item \textbf{`saveChunks`：}接收块ID列表，使用OpenMP并行启动写入任务，每个块在独立线程中将张量序列化为\schun 二进制流并写入磁盘。
-    \item \textbf{`loadChunks`：}接收块ID列表，并行读取\schun 文件并重建为GPU张量。
-\end{itemize}
-
-\subsection{二进制块格式（.schun）}
-
-\schun 文件格式的序列化/反序列化实现于src/model/model\_storage.cpp。每个块文件自包含构建该块所需的所有参数与优化器状态，支持训练的暂停与恢复。
-
-对在线训练系统而言，仅保存锚点参数$\theta_c$并不足够。Adam优化器\cite{kingma2014adam}还维护一阶矩估计$m_c$、二阶矩估计$v_c$和步数$t_c$。因此，chunk $c$的可恢复状态应写为
-\begin{equation}
-\mathcal{S}_c=\{\theta_c,m_c,v_c,t_c,a_c\},
-\end{equation}
-其中$a_c$表示访问时间、锚点数量等调度元数据。若换出时丢弃$m_c$和$v_c$，重新加载后相当于对该局部地图重新启动优化器，容易造成收敛速度下降和跨chunk外观不连续。因此，本系统的\schun 文件保存13类锚点相关张量以及Adam参数组状态。
-
-表\ref{tab:schun_format}给出了\schun 文件的完整布局。
+\schun 是chunk的可恢复训练状态文件。每个文件由chunk ID、锚点参数、统计张量和Adam状态组成。表\ref{tab:schun_format}列出主要字段。
 
 \begin{table}[htbp]
 \centering
-\caption{\schun 二进制块文件格式}
+\caption{\schun 文件中的可恢复训练状态}
 \label{tab:schun_format}
-\begin{tabular}{lll}
+\begin{tabular}{p{3.3cm}p{8.8cm}}
 \toprule
-\textbf{偏移（bytes）} & \textbf{大小} & \textbf{字段} \\
+\textbf{字段组} & \textbf{内容} \\
 \midrule
-0  & 4  & 魔数：0x5343484E（"SCHN"） \\
-4  & 4  & 版本号：1 \\
-8  & 8  & Chunk ID（int64编码） \\
-16 & 4  & 锚点数量（uint32） \\
-20 & -- & 锚点参数张量（13个）：\\
-   &    & \quad TensorHeader + raw data for each: \\
-   &    & \quad anchor\_, offset\_, anchor\_feat\_, anchor\_scaling\_,\\
-   &    & \quad anchor\_rotation\_, anchor\_opacity\_, exist\_since\_,\\
-   &    & \quad anchor\_chunk\_ids\_, anchor\_ids\_, offset\_gradient\_accum\_,\\
-   &    & \quad offset\_denom\_, opacity\_accum\_, anchor\_denom\_ \\
--- & -- & Adam优化器状态（8组参数组）：\\
-   &    & \quad step\_count + exp\_avg + exp\_avg\_sq per group \\
+锚点参数 & \texttt{anchor}、\texttt{offset}、\texttt{anchor\_feat}、\texttt{anchor\_scaling}、\texttt{anchor\_rotation}、\texttt{anchor\_opacity} \\
+身份与归属 & \texttt{exist\_since}、\texttt{anchor\_chunk\_ids}、\texttt{anchor\_ids}、\texttt{chunk\_id} \\
+训练统计 & \texttt{offset\_gradient\_accum}、\texttt{offset\_denom}、\texttt{opacity\_accum}、\texttt{anchor\_denom} \\
+优化器状态 & 每个锚点参数组的\texttt{exp\_avg}、\texttt{exp\_avg\_sq}和\texttt{step\_counts} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-每个`TensorHeader`包含维度数、各维度大小、数据类型及数据字节数，确保跨平台兼容性。
+换出过程在\texttt{saveAndEvictChunks}中完成。系统先保存loaded和new chunk，再从所有锚点张量中删除对应行，同时裁剪Adam参数状态。换入过程通过append流程完成：系统将chunk数据追加到现有张量末尾，并恢复相应参数组的Adam一阶矩、二阶矩和步数。该流程保证了外存调度只改变数据驻留位置，不改变优化问题本身。
 
-文件命名规则：p<n>\_p<n>\_p<n>.schun（例如p2\_n5\_p0.schun表示$(c_x=2,c_y=-5,c_z=0)$的块）。
+\subsection{图示设计建议}
 
-\section{渲染与训练模块}
+本节建议绘制三幅黑白图。第一幅为chunk状态机，对应图\ref{fig:chunk_state_machine}；第二幅为异步I/O流水线，显示``chunk id batch''到多个\texttt{future}任务再到\texttt{appendLoadedChunks}的汇聚；第三幅为\schun 文件结构图，将文件分为Header、Anchor Tensors、Statistics和Adam States四段。图中应突出CPU侧调度、磁盘文件和GPU resident set三层关系。
 
-\subsection{两级视锥剔除}
+\section{子高斯级渲染与训练闭环}
 
-视锥剔除实现于src/rendering/frustum\_culler.cpp，采用两级过滤：
+\subsection{单次训练迭代的数据路径}
 
-\textbf{第一级 -- 块级AABB测试：}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 从世界-视图-投影矩阵$\mathbf{WVP}$提取6个视锥平面$\{(\mathbf{n}_j,w_j)\}_{j=1}^6$（使用Gribb-Hartmann方法\cite{gribb2001fast}）。
-    \item 对每个块的AABB进行保守的n-vertex测试：只要AABB存在至少一个顶点在所有平面内侧，则该块可见。
-    \item 不可见块整体跳过——该块的锚点既不需加载也不参与MLP展开。
-\end{enumerate}
+训练迭代在Mapper和Trainer中采用一致的数据路径：关键帧采样、视锥剔除、chunk管理、锚点切片、MLP展开、光栅化、损失计算、反向传播、Adam更新和周期性稠密化。该路径如图\ref{fig:training_pipeline}所示。
 
-\textbf{第二级 -- 锚点级球体测试：}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 对可见块中的每个锚点，以其位置为球心、$R_i = \max_{k}\|\mathbf{o}_i^k\cdot\mathbf{s}_i^a[:3]\|$为半径构建包围球。
-    \item 测试球心与6个视锥平面的符号距离：若任一距离$<-R_i$，则剔除该锚点。
-\end{enumerate}
+\begin{figure}[htbp]
+\centering
+\fbox{%
+\begin{minipage}{0.94\textwidth}
+\centering
+\vspace{4pt}
+\texttt{KeyframeSelection}
+$\rightarrow$
+camera matrices
+$\rightarrow$
+\texttt{cullVisibleAnchors}\\
+$\rightarrow$
+active chunk load/evict
+$\rightarrow$
+\texttt{getVisibleAnchors}
+$\rightarrow$
+\texttt{AnchorMLP::expandAnchorsToGaussians}\\
+$\rightarrow$
+\texttt{ScaffoldRenderer::render}
+$\rightarrow$
+\texttt{computeAllLosses}
+$\rightarrow$
+\texttt{loss.backward}\\
+$\rightarrow$
+\texttt{optimizerStep}
+$\rightarrow$
+\texttt{adjustAnchors}
+$\rightarrow$
+\texttt{checkMemoryPressure}
+\vspace{4pt}
+\end{minipage}}
+\caption{训练与渲染闭环。GPU只处理当前resident set中的可见锚点，子高斯是MLP展开的临时渲染图元。}
+\label{fig:training_pipeline}
+\end{figure}
 
-从判定条件看，块级剔除使用粗粒度AABB以减少磁盘加载和MLP展开次数，锚点级剔除使用包围球进一步减少实际渲染图元。若视锥第$j$个平面为$(\mathbf{n}_j,w_j)$，锚点$i$的包围球半径为$R_i$，则锚点可见条件可写为
+这个闭环中有两个重要资源边界。第一，\texttt{cullVisibleAnchors}在渲染前执行chunk级和anchor级筛选，使MLP前向只作用于$\mathcal{A}_{\mathrm{vis}}$。第二，\texttt{optimizerStep}使用可见mask执行稀疏更新语义，避免不可见锚点在该迭代中被无意义梯度扰动。二者共同保证训练计算集中在当前监督视角相关的地图局部。
+
+\subsection{两级视锥剔除与renderer interaction}
+
+视锥剔除的第一级是chunk级AABB测试。模型根据相机中心和WVP矩阵查询可见chunk ID，必要时调用\texttt{loadChunks}把磁盘chunk换入GPU。第二级是anchor级测试：系统先得到候选锚点mask，再结合投影范围和深度约束得到最终可见mask。该mask一方面保护当前可见chunk免于LRU淘汰，另一方面决定传入渲染器的锚点切片。
+
+渲染器交互由\texttt{ScaffoldRenderer::render}封装。输入包括\texttt{GaussianModel}、可见mask、相机矩阵、图像尺寸和背景色。函数内部获取\texttt{AnchorData}，调用MLP生成\texttt{ExpandedGaussians}，再使用CUDA后端或LibTorch回退后端输出\texttt{RenderOutput}。输出字段包括RGB、depth、alpha和radii，其中radii用于可见性统计和稠密化判断。由于MLP展开和光栅化都在LibTorch计算图内保持可导，损失可以沿\texttt{RenderOutput}反传到锚点特征、offset、尺度、不透明度和MLP权重。
+
+\subsection{损失、反向传播与优化状态}
+
+训练目标由RGB重建、SSIM、深度和各向同性正则组成：
 \begin{equation}
-\mathbf{n}_j^\top\mathbf{x}_i^a+w_j \geq -R_i,\quad j=1,\dots,6.
+\mathcal{L}
+=
+(1-\lambda_s)\mathcal{L}_{1}
++
+\lambda_s\mathcal{L}_{\mathrm{SSIM}}
++
+\lambda_d\mathcal{L}_{\mathrm{depth}}
++
+\lambda_i\mathcal{L}_{\mathrm{iso}}.
 \end{equation}
-只有满足所有平面约束的锚点才会进入\texttt{visible\_mask}。这一判定直接对应\texttt{GaussianModel::cullVisibleAnchors}输出的布尔张量，后续渲染器只对该掩码选中的锚点调用MLP展开。
+式中，$\mathcal{L}$为单次训练迭代的总损失；$\mathcal{L}_{1}$为RGB颜色的L1重建损失；$\mathcal{L}_{\mathrm{SSIM}}$为结构相似性损失；$\mathcal{L}_{\mathrm{depth}}$为深度监督损失；$\mathcal{L}_{\mathrm{iso}}$为子高斯尺度各向同性正则；$\lambda_s$、$\lambda_d$和$\lambda_i$分别表示SSIM、深度和尺度正则的权重。
+这些损失在\texttt{src/training/losses.cpp}中计算，训练循环调用\texttt{loss.backward()}生成梯度。随后\texttt{GaussianModel::optimizerStep}根据可见mask更新参数组。参数组包括锚点位置、offset、特征、不透明度、尺度、旋转、MLP参数和外观嵌入，对应\texttt{kNumAnchorParamGroups}中的八组状态。由于Adam状态按参数组保存到chunk文件，chunk换出后再换入不会丢失局部动量信息。
 
-\textbf{内存管理集成：}剔除过程中，对判定为可见但尚未加载的块，自动触发`loadChunks`；对已加载的块，更新其访问时间戳。
+锚点生长会改变优化器状态维度。代码中的实现策略是保存已有锚点行的Adam状态，为新增行补零，再重建参数组。这种方式比直接重启优化器更稳定，因为已有锚点的动量和步数得以保留；新增锚点则从零动量开始参与优化，避免污染旧锚点的收敛轨迹。
 
-最终输出一个布尔掩码`[N]`，标记所有可见锚点，供后续MLP展开与光栅化使用。
+\subsection{显存稳定性的来源}
 
-\subsection{双后端可微光栅化}
-
-光栅化器实现于src/rendering/gaussian\_renderer.cpp。系统采用双后端设计，通过编译期宏HAVE\_CUDA\_RASTERIZER在两种渲染后端之间自动切换。
-
-本节所述渲染管线建立在3DGS可微光栅化\cite{kerbl20233dgaussians}之上，但与标准3DGS不同，光栅化器接收的不是长期存储的独立高斯参数，而是由可见anchor经\texttt{AnchorMLP}即时解码得到的子高斯。这样设计的直接结果是：存储和外存管理发生在anchor层，屏幕空间投影和$\alpha$混合发生在child Gaussian层。
-
-\textbf{渲染管线（`ScaffoldRenderer::render`）：}
-
-\begin{enumerate}[label=\arabic*.,leftmargin=2em,itemsep=0pt,topsep=0pt]
-    \item $\text{sliced\_anchors} = \text{model.getVisibleAnchors(visible\_mask)}$ \hfill // 切片可见锚点
-    \item $\text{expanded} = \text{model.mlp().expandAnchorsToGaussians(...)}$ \qquad // MLP展开
-    \item $\text{active} = \text{expanded.child\_mask}$ \hfill // 滤除不透明度 $\le 0$ 的子高斯
-    \item 若 $\text{HAVE\_CUDA\_RASTERIZER}$ 已定义（INRIA CUDA光栅化）：
-    \begin{quote}
-        $\text{rgb, depth} = \text{RasterizeGaussians(}$\\
-        $\quad\text{xyz[active], color[active], opacity[active],}$\\
-        $\quad\text{scaling[active], rotation[active],}$\\
-        $\quad\text{w2v, proj, FoVx, FoVy, H, W, bg)}$
-    \end{quote}
-    \item 否则（纯LibTorch回退）：
-    \begin{quote}
-        $\text{rgb, depth} = \text{renderGaussiansGPU(}$\\
-        $\quad\text{xyz[active], color[active], opacity[active],}$\\
-        $\quad\text{scaling[active], rotation[active],}$\\
-        $\quad\text{w2v, proj, FoVx, FoVy, H, W, bg)}$
-    \end{quote}
-\end{enumerate}
-
-\textbf{后端一 —— INRIA CUDA光栅化器：}
-当CMake在third\_party/diff\_gaussian\_rasterization检测到子模块时，启用HAVE\_CUDA\_RASTERIZER宏，链接INRIA开源的tile-based可微高斯光栅化器。该后端实现了完整的3DGS渲染管线——将3D高斯经视图-投影矩阵变换后，基于tile排序进行精确的$\alpha$混合，渲染质量与原始3DGS论文一致。该子模块锁定在commit 59f5f77（2023年8月，代码冻结），由CMake直接编译其CUDA源文件（cuda\_rasterizer/*.cu）。
-
-\textbf{后端二 —— 纯LibTorch GPU回退：}
-当CUDA光栅化器不可用时，系统使用完全构建于LibTorch张量算子的GPU渲染器。该回退方案的核心流程为：
-
-\begin{enumerate}
-    \item \textbf{批量投影：}将所有3D点通过世界-视图-投影矩阵一次性变换至裁剪空间，再归一化至NDC空间与像素坐标。
-    \item \textbf{视口过滤：}以GPU布尔掩码向量化过滤超出图像边界、相机后方及深度范围外的点，零CPU同步（仅.any().item<bool>()一次性判空）。
-    \item \textbf{屏幕半径估算：}使用$r \approx f \cdot \bar{s} / z_w$近似计算每个高斯的投影屏幕半径（$f$为焦距，$\bar{s}$为平均尺度）。
-    \item \textbf{深度排序与$\alpha$合成：}按像素平坦化索引排序高斯贡献后，使用torch::cumprod计算透射率乘积，通过scatter\_add逐像素累加加权颜色，实现前至后的$\alpha$混合。
-\end{enumerate}
-
-该回退方案所有操作均在GPU上执行，唯一的同步点为渲染前的空帧判出，在功能上完整支持开发与验证场景。但与INRIA原始tile排序实现相比，在排序精度、混合准确度和渲染效率方面存在一定差距，因此生产部署建议启用CUDA光栅化器后端。
-
-\subsection{损失函数设计}
-
-损失函数实现于src/training/losses.cpp，由四项加权组合：
-
+单次训练迭代的GPU显存主项可写为
 \begin{equation}
-\mathcal{L} = \mathcal{L}_1 + \lambda_{\text{SSIM}}\,\mathcal{L}_{\text{SSIM}}
-              + \lambda_{\text{depth}}\,\mathcal{L}_{\text{depth}}
-              + \lambda_{\text{iso}}\,\mathcal{L}_{\text{iso}}
+M_{\mathrm{iter}}
+\approx
+B_A|\mathcal{A}_{\mathrm{res}}|
++
+M_{\mathrm{MLP}}
++
+M_{\mathrm{render}}(K|\mathcal{A}_{\mathrm{vis}}|)
++
+M_{\mathrm{frame}}.
 \end{equation}
+式中，$M_{\mathrm{iter}}$表示单次训练迭代的主要GPU显存占用；$B_A$表示单个锚点及其训练态状态的平均字节数；$\mathcal{A}_{\mathrm{res}}$表示GPU resident锚点集合；$M_{\mathrm{MLP}}$表示共享MLP参数及其优化状态占用；$M_{\mathrm{render}}(\cdot)$表示渲染中间缓存随输入子高斯数量变化的显存开销；$K$为每个锚点展开的子高斯数量；$\mathcal{A}_{\mathrm{vis}}$表示当前帧可见锚点集合；$M_{\mathrm{frame}}$表示输入图像、深度图和监督缓存占用。
+系统通过\texttt{max\_anchors\_in\_memory\_}约束$|\mathcal{A}_{\mathrm{res}}|$，通过两级视锥剔除约束$|\mathcal{A}_{\mathrm{vis}}|$，通过chunk外存让全局地图规模$|\mathcal{A}|$转移到磁盘。因此，即使全局地图继续增长，GPU训练态显存仍围绕active working set波动，而不是随轨迹长度线性增长。
 
-\textbf{L1颜色损失：}
-\begin{equation}
-\mathcal{L}_1 = \frac{1}{|\Omega|}\sum_{\mathbf{p}\in\Omega}\big|\hat{C}(\mathbf{p}) - C_{\text{gt}}(\mathbf{p})\big|
-\end{equation}
+\subsection{图示设计建议}
 
-\textbf{SSIM损失：}
-\begin{equation}
-\mathcal{L}_{\text{SSIM}} = 1 - \operatorname{SSIM}(\hat{C},\,C_{\text{gt}})
-\end{equation}
-使用基于高斯加窗的卷积实现结构相 似度（SSIM）度量\cite{wang2004ssim}。权重$\lambda_{\text{SSIM}}=0.2$。
+本节建议绘制一张pipeline图和一张反向传播图。pipeline图按图\ref{fig:training_pipeline}组织，每个节点标注函数名。反向传播图从\texttt{RenderOutput}回指\texttt{ExpandedGaussians}、\texttt{AnchorMLP}和anchor tensor rows，用虚线表示梯度流，用实线表示前向数据流。图中应明确标注child Gaussian为runtime object，anchor tensor为persistent trainable state。
 
-\textbf{深度L1损失：}
-\begin{equation}
-\mathcal{L}_{\text{depth}} = \frac{1}{|\Omega_d|}\sum_{\mathbf{p}\in\Omega_d}\big|\hat{D}(\mathbf{p}) - D_{\text{gt}}(\mathbf{p})\big|
-\end{equation}
-权重$\lambda_{\text{depth}}=0.1$。仅在有效深度像素$\Omega_d$上计算。
+\section{SLAM驱动的Mapper pipeline与同步机制}
 
-\textbf{各向同性正则化：}约束子高斯尺度向各向同性方向收敛：
-\begin{equation}
-\mathcal{L}_{\text{iso}} = \frac{1}{M}\sum_{i=1}^{M} \|\mathbf{s}_i - \bar{s}_i\mathbf{1}\|_1
-\end{equation}
-其中$\bar{s}_i = \frac{1}{3}\sum_{j=1}^{3}s_{i,j}$。该正则化减少"针状"高斯伪影，权重$\lambda_{\text{iso}}=0.01$。
+\subsection{两阶段Mapper生命周期}
 
-\subsection{训练调度器}
+\texttt{ScaffoldMapper}是系统顶层编排器，其生命周期由\texttt{MapperState}表示，包括\texttt{kIdle}、\texttt{kInitializing}、\texttt{kTracking}、\texttt{kLoopClosing}和\texttt{kShuttingDown}。启动后，\texttt{start}创建Mapper线程并调用\texttt{run}。系统先进入Phase 1初始建图：累积若干关键帧，估计或读取深度，调用\texttt{sampleGaussians}和\texttt{seedGaussians}生成初始锚点，再执行\texttt{trainingSetup}建立Adam参数组。满足初始条件后进入Phase 2增量映射：持续消费帧队列和MappingOperation队列，执行局部训练、回环重优化和尺度修正。
 
-训练调度器`ScaffoldTrainer`实现于src/training/trainer.cpp，通过OpenCV FileStorage解析YAML配置文件（cfg/gaussian\_mapper/scaffold\_chunks.yaml）。
+\begin{figure}[htbp]
+\centering
+\fbox{%
+\begin{minipage}{0.94\textwidth}
+\centering
+\vspace{4pt}
+\textbf{Phase 1: Initial Mapping}\\
+frame queue $\rightarrow$ track/pose $\rightarrow$ GaussianKeyframe $\rightarrow$
+depth seeds $\rightarrow$ initial anchors $\rightarrow$ training setup\\[4pt]
+\textbf{Phase 2: Incremental Mapping}\\
+MappingOperation queue $\rightarrow$ combine operations $\rightarrow$
+LocalBA / LoopClosingBA / ScaleRefinement\\
+$\downarrow$\\
+active chunk update $\rightarrow$ train iterations $\rightarrow$ viewer snapshot $\rightarrow$ save chunks
+\vspace{4pt}
+\end{minipage}}
+\caption{Mapper两阶段生命周期。Phase 1建立可训练锚点地图，Phase 2由SLAM操作队列持续驱动局部更新和回环修正。}
+\label{fig:mapper_lifecycle}
+\end{figure}
 
-\textbf{初始化：}将配置参数映射至五组C++结构体（`AnchorModelConfig`、`ChunkConfig`、`OptimizationConfig`、`CameraConfig`、`KeyframeConfig`）。
+与普通离线3DGS训练不同，Mapper的输入不是固定训练集，而是不断变化的关键帧流和操作流。每个\texttt{MappingOperation}携带一组\texttt{KFTuple}，其中包含关键帧ID、相机ID、位姿、主图像、回环标志和辅助图像。Mapper将这些元组转化为\texttt{GaussianKeyframe}，写入带mutex保护的\texttt{GaussianScene}，再由关键帧采样器选择训练监督。
 
-\textbf{训练循环（`trainOneIteration`）：}
+\subsection{SLAM前端如何驱动地图更新}
 
-\begin{enumerate}[label=\arabic*.,leftmargin=2em,itemsep=0pt,topsep=0pt]
-    \item $\text{kf} = \text{keyframe\_selector->getNextKeyframe()}$ \hfill // 基于损失加权采样
-    \item 计算 WVP 矩阵 + 相机中心
-    \item $\text{vis\_mask} = \text{model->cullVisibleAnchors(...)}$ \hfill // 两级剔除 + 块管理
-    \item if $\text{vis\_mask.sum()} = 0$：skip iteration
-    \item $\text{output} = \text{ScaffoldRenderer::render(...)}$ \hfill // MLP展开 + CUDA光栅化
-    \item $\text{loss} = \text{computeAllLosses(output, kf->GT, weights)}$ \quad // L1 + SSIM + Depth + Iso
-    \item $\text{loss.backward()}$ \hfill // 反向传播
-    \item $\text{model->optimizerStep(visibility, N\_visible)}$ \hfill // Adam更新
-    \item $\text{model->optimizerZeroGrad()}$ \hfill // 梯度清零
-    \item if $\text{iter} \;\%\; \text{densify\_interval} = 0$：\hfill // 定期稠密化
-    \begin{quote}
-        $\text{model->adjustAnchors(...)}$\\
-        $\text{model->trainingSetup(opt\_cfg)}$ \hfill // 重建优化器
-    \end{quote}
-\end{enumerate}
+\texttt{SLAMSystemInterface}抽象了三类跟踪入口：\texttt{trackMonocular}、\texttt{trackStereo}和\texttt{trackRGBD}。内置\texttt{BuiltinSLAMAdapter}使用ORB特征、PnP和BoVW回环作为自包含实现；接口也允许替换为更完整的SLAM前端。无论前端实现如何，Mapper只依赖两个输出：当前帧位姿和MappingOperation队列。
 
-\textbf{图示设计建议：}本小节适合绘制“单次训练迭代工程流程图”。图中按代码执行顺序组织为：关键帧采样、计算WVP与相机中心、两级视锥剔除与chunk加载、AnchorMLP展开、双后端渲染、损失计算、反向传播、Adam更新、周期性锚点生长/剪枝。图中每个节点应对应一个具体函数或类，例如\texttt{KeyframeSelection}、\texttt{GaussianModel::cullVisibleAnchors}、\texttt{ScaffoldRenderer::render}、\texttt{computeLosses}和\texttt{GaussianModel::adjustAnchors}。该图的用途是说明实现流程，不再展开第二章已经给出的可微渲染原理。
+LocalMappingBA表示局部窗口需要补充训练。Mapper通过LocalBA批处理函数处理相关关键帧，生成新锚点或更新局部窗口。LoopClosingBA表示位姿图或回环检测已经改变历史区域的一致性约束。Mapper进入\texttt{kLoopClosing}状态，暂停普通帧接收，临时扩大GPU锚点上限，保护回环相关chunk，并执行额外回环优化迭代。ScaleRefinement则处理尺度变化对地图坐标和锚点分布的影响。
 
-从优化角度看，训练调度器在关键帧集合$\mathcal{K}$上最小化渲染图像与监督图像之间的误差：
-\begin{equation}
-\min_{\Theta_{\mathrm{anchor}},\Theta_{\mathrm{MLP}}}
-\sum_{k\in\mathcal{K}}
-\mathcal{L}\left(
-R(\Theta_{\mathrm{anchor}},\Theta_{\mathrm{MLP}},\mathbf{T}_{cw}^{k}),
-I_k,D_k
-\right),
-\end{equation}
-其中$R(\cdot)$表示由可见锚点展开、光栅化和$\alpha$混合组成的可微渲染函数，$I_k$和$D_k$分别为关键帧RGB图像和深度监督。$\Theta_{\mathrm{anchor}}$包含表\ref{tab:anchor_tensors}中的可学习锚点张量，$\Theta_{\mathrm{MLP}}$包含三个共享MLP的权重。
+\subsection{多线程同步与数据一致性}
 
-\textbf{关键帧采样器（`KeyframeSelection`）：}维护每帧的指数移动平均损失$\bar{\ell}_f$与被采样次数$u_f$，以概率：
-\begin{equation}
-P(f) \propto \frac{\bar{\ell}_f}{\max(u_f, 1)}
-\end{equation}
-进行离散采样。高损失、低使用率的帧有更高被选概率，促进训练均匀覆盖。
+系统同步机制围绕``共享状态最小化''设计。输入帧进入\texttt{frame\_queue\_}时由\texttt{mutex\_frame\_}保护；Mapper状态由\texttt{mutex\_state\_}保护；\texttt{GaussianScene}内部的关键帧map由\texttt{mutex\_kfs\_}保护；\texttt{BuiltinSLAMAdapter}的MappingOperation队列由\texttt{mutex\_queue\_}保护；Viewer通过\texttt{frame\_mutex\_}读取双缓冲快照。GPU训练路径本身集中在Mapper线程中执行，避免多个线程同时写\texttt{GaussianModel}张量。
 
-\textbf{8组Adam参数更新：}不同参数采用不同学习率，详细设置见表\ref{tab:lr_groups}。
+\begin{figure}[htbp]
+\centering
+\fbox{%
+\begin{minipage}{0.94\textwidth}
+\centering
+\vspace{4pt}
+Input Thread $\rightarrow$ \texttt{processFrame} $\rightarrow$ \texttt{frame\_queue\_}\\
+\hfill $\downarrow$ Mapper Thread consumes frames and operations\\
+SLAM Adapter $\rightarrow$ \texttt{op\_queue\_} $\rightarrow$ \texttt{combineMappingOperations}\\
+\hfill $\downarrow$ train/render/update GaussianModel\\
+Mapper Thread $\rightarrow$ \texttt{submitToViewer} $\rightarrow$ Viewer double buffer $\rightarrow$ Viewer Thread
+\vspace{4pt}
+\end{minipage}}
+\caption{Mapper、SLAM队列与Viewer之间的同步关系。训练张量只由Mapper线程写入，其他线程通过队列或快照传递数据。}
+\label{fig:thread_sync}
+\end{figure}
+
+这种同步方式使系统在工程上保持清晰的数据所有权：SLAM前端拥有位姿估计和操作生成，Mapper拥有地图训练状态，I/O任务拥有单个chunk文件的临时读写，Viewer拥有显示快照。chunk换入换出、锚点增删和Adam状态恢复均在Mapper控制路径下完成，避免了异步I/O直接修改训练中张量的风险。
+
+\subsection{Loop closure与active chunk保护}
+
+回环闭合对大场景系统的影响不止是更新相机轨迹。它可能重新激活已经换出到磁盘的历史chunk，并要求这些chunk在若干训练迭代内保持常驻。系统通过两个机制处理该问题。第一，LoopClosingBA期间临时放大内存上限，避免受影响区域刚加载又被LRU淘汰。第二，回环相关关键帧可见的chunk进入保护集合，\texttt{evictExcessChunks}只从保护集合外选择候选。这样，回环优化期间地图一致性修正不会被外存调度打断。
+
+\subsection{图示设计建议}
+
+本节建议绘制一张时序图和一张Mapper状态图。时序图包含Input、SLAMSystemInterface、Operation Queue、ScaffoldMapper、GaussianModel、Renderer和Viewer七条泳道，重点标注LocalBA和LoopClosingBA两种路径。状态图以\texttt{MapperState}为节点，标出初始建图、正常跟踪、回环闭合和关闭之间的转换条件。
+
+\section{实现索引与配置边界}
+
+\subsection{配置如何控制资源约束}
+
+系统资源边界由\texttt{scaffold\_chunks.yaml}控制，并在\texttt{trainer.cpp}中映射到锚点、chunk、优化、相机和关键帧五组配置。关键配置不是简单超参数，而是直接改变数据流粒度：offset数量决定每个锚点生成的子高斯数，特征维度决定MLP输入和压缩容量，chunk边长决定I/O空间粒度，GPU锚点上限决定resident set规模，损失权重决定反向传播对颜色、深度和形状的约束比例。
 
 \begin{table}[htbp]
 \centering
-\caption{Adam参数组学习率设置}
-\label{tab:lr_groups}
-\begin{tabular}{lrr}
-\toprule
-\textbf{参数组} & \textbf{学习率} & \textbf{衰减率/迭代} \\
-\midrule
-锚点位置 & $5\times10^{-5}$ & 0.99998 \\
-锚点特征 & 0.005 & -- \\
-锚点不透明度 & 0.1 & -- \\
-锚点基础缩放 & 0.01 & -- \\
-锚点基础旋转 & 0.002 & -- \\
-子偏移量 & $10^{-4}$ & -- \\
-MLP权重（不透明度） & 0.005 & -- \\
-MLP权重（协方差） & 0.005 & -- \\
-MLP权重（颜色） & 0.0025 & -- \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{深度估计模块}
-
-深度估计模块实现于src/depth/depth\_estimator.cpp（接口定义于include/scaffold\_chunks/depth\_estimator.h），为系统提供统一的深度估计抽象层，支持两种深度源。
-
-\textbf{单目深度估计（MonoDepthEstimator）：}
-\begin{itemize}
-    \item 设计为加载TensorRT推理引擎（如DepthAnything模型），接受RGB图像并输出稠密深度图。
-    \item 通过initialize(engine\_path)加载TensorRT引擎并创建推理上下文。
-    \item 完整的TensorRT推理管线已实现，生产环境中需配合预编译的DepthAnything引擎文件使用。
-\end{itemize}
-
-\textbf{双目深度估计（StereoDepthEstimator）：}
-\begin{itemize}
-    \item 基于OpenCV的cv::StereoSGBM实现，执行半全局块匹配（Semi-Global Block Matching）立体匹配。
-    \item 深度计算：$d = b\cdot f_x / \delta$，其中$b$为基线长，$f_x$为焦距，$\delta$为视差值。
-    \item 支持左右一致性检查（LR consistency check）以过滤遮挡区域的不可靠深度值，输出逐像素置信度掩码。
-    \item 默认参数：基线0.12 m，焦距500像素，SGBM块大小5$\times$5，最小视差0，最大视差128。
-\end{itemize}
-
-\textbf{工厂函数：}createDepthEstimator(DepthSource, model\_path)根据枚举类型自动构建对应的深度估计器实例，便于系统在单目与双目模式间切换。
-
-\subsection{SLAM前端——视觉跟踪}
-
-视觉跟踪模块实现于src/slam/tracking.cpp（接口定义于include/scaffold\_chunks/tracking.h），提供帧间位姿估计的核心功能。
-
-\textbf{ORB特征提取与匹配：}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 对相邻帧提取ORB特征点（默认500个），计算BRIEF描述子。
-    \item 使用FLANN匹配器进行描述子匹配，通过Lowe's ratio test（阈值0.7）滤除误匹配。
-    \item 利用深度图将匹配的2D特征点反投影为3D点，构建3D-2D对应关系。
-\end{enumerate}
-
-\textbf{PnP位姿估计：}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 使用EPnP + RANSAC从3D-2D对应关系中鲁棒估计相机位姿。
-    \item RANSAC内点阈值设为2.0像素，最大迭代200次。
-    \item 当深度信息不足时，回退至本质矩阵（5点法）+ 三角化恢复位姿。
-\end{enumerate}
-
-第二章已经给出PnP重投影误差的数学形式，本节只强调其工程输出：\texttt{TrackingModule}返回的$\mathbf{T}_{cw}$并不直接优化高斯参数，而是进入\texttt{GaussianKeyframe}，随后决定当前关键帧的投影矩阵、可见chunk集合和渲染监督视角。
-
-\textbf{运动模型：}维护恒定速度运动模型，当跟踪丢失时以模型预测值初始化新帧位姿。
-
-\subsection{SLAM前端——回环闭合}
-
-回环闭合模块实现于src/slam/loop\_closing.cpp（接口定义于include/scaffold\_chunks/loop\_closing.h），负责检测并修正长期累积漂移。
-
-\textbf{场景识别（Place Recognition）：}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 对每帧ORB描述子构建k-means词袋（BoVW）词汇表（默认10个聚类中心）。
-    \item 对新关键帧，计算其BoVW直方图并与历史关键帧进行余弦相似度检索。
-    \item 超过相似度阈值且间隔$\geq$50帧的候选帧进入几何验证阶段。
-\end{enumerate}
-
-\textbf{几何验证与位姿图优化：}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 对候选回环帧，使用PnP + RANSAC验证3D-2D对应关系，计算相对位姿。
-    \item 构建位姿图：节点为关键帧位姿，边为帧间约束（里程计边 + 回环边）。
-    \item 在SE(3)流形上执行Gauss-Newton优化，最小化位姿图残差。
-    \item 将优化后的位姿变换应用于受影响的子高斯位置，确保场景几何的一致性。
-\end{enumerate}
-
-第二章已说明位姿图优化的误差形式，本节只说明回环结果如何进入工程管线：回环闭合完成后，系统不是简单更新轨迹显示，而是通过\texttt{MappingOperation(OprType::LoopClosingBA)}通知Mapper对受影响的高斯地图区域进行额外训练，这与LoopSplat等回环约束高斯地图一致性工作的动机一致\cite{zhu2025loopsplat}。
-
-\textbf{与Mapper的协作：}回环检测在BuiltinSLAMAdapter::detectAndEnqueueLoop中触发，通过MappingOperation(OprType::LoopClosingBA)进入Mapper的combineMappingOperations队列。处理回环时Mapper暂停帧接收（pause\_frame\_ingestion\_ = true），完成loop\_closure\_optimization\_iterations（默认1000次）次额外训练迭代后恢复。
-
-\subsection{SLAM系统接口层}
-
-SLAM系统接口层实现于include/scaffold\_chunks/slam\_system.h和src/slam/builtin\_adapter.cpp，是连接SLAM前端与高斯Mapper的抽象桥梁。
-
-\textbf{SLAMSystemInterface：}定义统一的前端接口，包含trackMonocular、trackStereo、trackRGBD三种传感器模式的位姿估计接口，以及hasMappingOperation和getAndPopMappingOperation队列接口。该抽象使系统可以自由替换前端实现（从内置适配器到完整ORB-SLAM3集成）而无需改动Mapper。
-
-\textbf{MappingOperation：}镜像ORB-SLAM3的Atlas操作类型，以OprType枚举区分LocalMappingBA（局部BA）、LoopClosingBA（回环BA）和ScaleRefinement（尺度精化）。每个操作携带关联的关键帧元组KFTuple（包含关键帧ID、相机ID、位姿$T_{cw}$、RGB图像、回环标志及辅助图像）。
-
-\textbf{BuiltinSLAMAdapter：}是SLAMSystemInterface的自包含实现，内部持有TrackingModule和LoopClosingModule实例。trackMonocular/\\ trackStereo/ trackRGBD方法调用对应跟踪逻辑并返回位姿；detectAndEnqueueLoop方法定期（每10帧，ID > 50）执行回环检测并构造MappingOperation入队。
-
-\textbf{图示设计建议：}本小节适合绘制“SLAM前端与高斯Mapper协同时序图”。图中参与者建议包括Input Frame、\texttt{SLAMSystemInterface}、\texttt{BuiltinSLAMAdapter}、\texttt{TrackingModule}、\texttt{LoopClosingModule}、\texttt{MappingOperation Queue}和\texttt{ScaffoldMapper}。主要箭头为：输入帧调用\texttt{trackMono}/\texttt{trackStereo}/\texttt{trackRGBD}得到位姿；关键帧被封装为\texttt{GaussianKeyframe}；回环检测生成\texttt{LoopClosingBA}操作；Mapper通过\texttt{getAndPopMappingOperation}取出操作并由\texttt{combineMappingOperations}分发。该图用于表达模块解耦关系，不需要画传统SLAM后端优化原理。
-
-\subsection{SLAM Mapper管线（DiskChunGS对齐）}
-
-Mapper管线实现于src/mapper/mapper\_core.cpp（接口定义于include/scaffold\_chunks/gaussian\_mapper.h），采用DiskChunGS对齐的两阶段设计，作为系统的顶层编排器。
-
-\textbf{架构设计：}Mapper提供两种构造模式——SLAM模式（接收SLAMSystemInterface共享指针）与外部模式（接收外部位姿输入），使系统可灵活切换自主SLAM或离线全局优化模式。
-
-\textbf{两阶段运行循环（run()）：}
-
-\textbf{Phase 1 —— 初始建图：}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 循环处理传入帧数据：若处于SLAM模式，通过slam\_system\_->trackStereo()等接口获取位姿；若为外部模式，直接使用传入位姿。
-    \item 将每帧封装为GaussianKeyframe，累积至GaussianScene容器。
-    \item 当满足初始建图条件（累积$\geq$min\_num\_initial\_map\_kfs帧）时，从SLAM系统拉取并处理待处理的MappingOperation。
-    \item 为所有关键帧批量生成高斯种子（sampleGaussians），调用model\_->trainingSetup初始化优化器。
-    \item 执行一次训练迭代后进入Phase 2。
-\end{enumerate}
-
-\textbf{Phase 2 —— 增量映射：}
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item 持续接收新帧，由SLAM系统判定是否生成新关键帧及MappingOperation。
-    \item 定期调用combineMappingOperations()：将所有队列中的操作按类型分组（LocalBA、LoopBA、ScaleRefinement）。
-    \item LocalBA批量处理：从操作关联的关键帧中采样高斯并进行局部窗口训练。
-    \item LoopBA处理：暂停帧接收（100ms缓冲），应用回环变换至受影响的子高斯，执行额外loop\_closure\_optimization\_iterations（默认1000）次训练。
-    \item 每次迭代执行trainForOneIteration()：选择关键帧 $\to$ 视锥剔除 $\to$ MLP展开 $\to$ 渲染 $\to$ 损失计算 $\to$ 反向传播 $\to$ Adam更新 $\to$ 定期稠密化。
-\end{enumerate}
-
-\textbf{回环闭合内存管理：}在回环闭合期间，loop\_closure\_memory\_multiplier\_（默认8.0$\times$）将GPU锚点上限临时扩大，以容纳回环区域可能加载的额外块，避免在关键优化阶段触发频繁淘汰。
-
-因此，Mapper在工程上承担三类职责：一是接收前端位姿和关键帧并维护\texttt{GaussianScene}；二是把\texttt{MappingOperation}转换为局部训练、回环重优化或尺度修正任务；三是在每次训练迭代中调用模型、渲染器、损失函数和内存管理器。与GS-SLAM\cite{yan2024gsslam}、SplaTAM\cite{keetha2024splatam}、Photo-SLAM\cite{huang2024photoslam}等3DGS-SLAM系统类似，本系统同样以可微渲染损失驱动地图更新；不同之处在于其地图更新对象不是独立高斯集合，而是可外存调度的压缩锚点集合。
-
-\subsection{实时可视化模块}
-
-实时可视化模块实现于src/viewer/gaussian\_viewer.cpp（接口定义于include/scaffold\_chunks/gaussian\_viewer.h），提供独立线程运行的交互式3D场景查看器。
-
-\textbf{渲染架构：}
-\begin{itemize}
-    \item 基于GLFW窗口 + OpenGL 3.3核心上下文，以独立线程运行，与Mapper线程解耦。
-    \item 双缓冲ViewerFrameData结构：Mapper线程写入当前帧数据快照（高斯点云、相机位姿、关键帧列表），Viewer线程以互斥锁保护读取。
-    \item 绘制三类元素：相机视锥（绿色线段表示图像平面四角+相机中心连线）、关键帧轨迹（橙色折线连接所有KF位置）、高斯点云（按颜色的3D包围球/点）。
-\end{itemize}
-
-\textbf{交互控制：}
-\begin{itemize}
-    \item \textbf{轨道相机：}鼠标左键拖动旋转（方位角+仰角）、中键拖动平移、滚轮缩放。
-    \item \textbf{ImGui控制面板：}实时显示FPS、锚点数量、训练迭代数；提供渲染开关（视锥/点云/网格）、点大小滑块、背景色设置。
-    \item 默认窗口分辨率1920$\times$1080，背景深灰（RGB 0.15, 0.15, 0.15）。
-\end{itemize}
-
-\textbf{与Mapper的数据交互：}Mapper通过submitFrameData()接口推送每帧快照；Viewer仅读取快照副本，不直接访问GaussianModel或GaussianScene，确保线程安全。
-
-\section{关键工程实现细节}
-
-\subsection{YAML配置系统}
-
-配置文件使用OpenCV YAML格式（cv::FileStorage），定义了五组结构化配置节点（Anchor、Chunk、Optimization、Camera、Keyframe），总计40+可调参数。C++ struct与YAML节点间通过键名字符串映射实现自动解析（trainer.cpp中的`fromYAML`函数）。
-
-关键配置参数与系统行为的对应关系见表\ref{tab:config_behavior}。该表体现了本系统并非只在代码中硬编码算法，而是通过配置文件控制锚点表达能力、外存阈值和训练目标权重，便于第四章进行消融实验。
-
-\begin{table}[htbp]
-\centering
-\caption{关键配置参数与系统行为}
+\caption{配置项与系统资源边界}
 \label{tab:config_behavior}
-\begin{tabular}{lll}
+\begin{tabular}{p{3.6cm}p{2.1cm}p{6.3cm}}
 \toprule
-\textbf{配置项} & \textbf{默认值} & \textbf{影响的工程行为} \\
+\textbf{配置项} & \textbf{默认值} & \textbf{影响的数据流或资源边界} \\
 \midrule
-\texttt{Anchor.n\_offsets} & 5 & 每个锚点展开的子高斯数量$K$ \\
-\texttt{Anchor.feat\_dim} & 32 & 锚点隐特征维度$D$与MLP输入规模 \\
-\texttt{Anchor.voxel\_size} & 0.01 & 初始锚点空间分辨率 \\
-\texttt{Chunk.chunk\_size} & 20.0 & chunk空间边长与I/O粒度 \\
-\texttt{Chunk.max\_anchors\_in\_memory} & 120000 & GPU常驻锚点上限与LRU触发阈值 \\
-\texttt{Optimization.lambda\_dssim} & 0.2 & SSIM损失权重 \\
-\texttt{Optimization.lambda\_depth} & 0.1 & 深度监督权重 \\
-\texttt{Optimization.lambda\_isotropic} & 0.01 & 子高斯尺度正则权重 \\
+\texttt{n\_offsets} & 5 & 控制$K$，影响子高斯展开规模和渲染负载 \\
+\texttt{feat\_dim} & 32 & 控制锚点特征容量和MLP输入维度 \\
+\texttt{voxel\_size} & 0.01 & 控制锚点初始化密度和增量生长分辨率 \\
+\texttt{chunk\_size} & 20.0 & 控制chunk AABB、I/O粒度和active set大小 \\
+\texttt{max\_anchors} & 120000 & 控制GPU resident anchor上限和LRU触发阈值 \\
+\texttt{lambda\_dssim} & 0.2 & 控制结构相似性损失权重 \\
+\texttt{lambda\_depth} & 0.1 & 控制深度监督对地图几何的约束强度 \\
+\texttt{lambda\_isotropic} & 0.01 & 控制子高斯尺度正则强度 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{线程安全设计}
+\subsection{源文件与系统职责}
 
-关键帧容器（`GaussianScene`）使用std::mutex保护内部std::map，提供线程安全的`addKeyframe`/`getKeyframe`/`getAllKeyframes`接口，确保训练线程与数据加载线程的并发安全。
+表\ref{tab:fileorg}给出本章叙事与真实源文件的对应关系。该表的作用是帮助定位实现，而不是替代系统数据流说明。
 
-\subsection{张量序列化}
-
-`TensorHeader`提供跨平台的张量元数据编码：维度数、各维度大小、数据类型（c10::ScalarType的整数编码）及数据字节数。序列化时直接写入tensor.data\_ptr()指向的原始内存块，反序列化时通过torch::from\_blob重建张量，避免逐元素拷贝。
-
-\section{系统文件组织}
-
-表\ref{tab:fileorg}列出了系统的核心源文件及其对应章节。
-
-\begin{center}
-\captionof{table}{核心源文件与章节对应}
+\begin{table}[htbp]
+\centering
+\caption{核心源文件与系统职责}
 \label{tab:fileorg}
-\renewcommand{\arraystretch}{1.05}
-\begin{tabular}{l@{\hspace{0.8em}}l}
+\begin{tabular}{p{4.2cm}p{7.6cm}}
 \toprule
-\textbf{文件} & \textbf{本章对应节} \\
+\textbf{文件} & \textbf{系统职责} \\
 \midrule
-include/.../config.h & \S3.1 \\
-src/model/model\_core.cpp & \S3.2.1, \S3.2.2 \\
-src/model/model\_mlp.cpp & \S3.2.3 \\
-src/model/model\_optimization.cpp & \S3.2.4 \\
-include/.../chunk\_types.h & \S3.3.1 \\
-src/model/model\_memory.cpp & \S3.3.2, \S3.3.3 \\
-src/model/model\_storage.cpp & \S3.3.4 \\
-src/rendering/frustum\_culler.cpp & \S3.4.1 \\
-src/rendering/gaussian\_renderer.cpp & \S3.4.2 \\
-src/training/losses.cpp & \S3.4.3 \\
-src/training/trainer.cpp & \S3.4.4 \\
-src/depth/depth\_estimator.cpp & \S3.4.5 \\
-src/slam/tracking.cpp & \S3.4.6 \\
-src/slam/loop\_closing.cpp & \S3.4.7 \\
-include/.../slam\_system.h & \S3.4.8 \\
-src/slam/builtin\_adapter.cpp & \S3.4.8 \\
-src/mapper/mapper\_core.cpp & \S3.4.9 \\
-src/viewer/gaussian\_viewer.cpp & \S3.4.10 \\
+Mapper文件族 & Mapper线程、两阶段建图、MappingOperation分发、训练闭环编排 \\
+GaussianModel文件族 & 锚点张量、初始化、增量添加、全局ID与chunk归属 \\
+Memory/Storage文件族 & active chunk、LRU、并行I/O、\schun 序列化与Adam状态恢复 \\
+AnchorMLP文件族 & 可见锚点切片到子高斯的动态展开 \\
+Optimization文件族 & Adam参数组、稀疏更新、锚点生长剪枝、优化器状态扩展 \\
+FrustumCuller文件族 & chunk级和anchor级视锥剔除 \\
+Renderer文件族 & ScaffoldRenderer、CUDA/LibTorch渲染后端、RenderOutput \\
+SLAM接口文件族 & SLAM接口、MappingOperation队列、内置跟踪与回环适配 \\
+Scene/Keyframe文件族 & 关键帧容器、线程安全访问、训练关键帧采样 \\
+Viewer文件族 & Viewer线程、双缓冲快照、OpenGL可视化 \\
 \bottomrule
 \end{tabular}
-\end{center}
+\end{table}
 
 \section{本章小结}
 
-本章详细阐述了\ScaffoldChunGS 系统的设计与实现。系统以十大模块——锚点压缩表示、分块外存管理、双后端渲染、多目标训练、深度估计（SGBM+TensorRT）、视觉跟踪（ORB+PnP）、回环闭合（BoVW+SE(3)）、SLAM系统接口（SLAMSystemInterface+MappingOperation）、两阶段DiskChunGS对齐Mapper管线与实时可视化——为核心，在C++17/CUDA/LibTorch技术栈上构建了完整的3D高斯SLAM管线。核心设计决策包括：锚点粒度块管理使压缩与扩展机制对齐、双后端渲染策略（INRIA CUDA光栅化器 + 纯LibTorch回退）兼顾性能与可移植性、两级视锥剔除减少无效计算、LRU+5\%滞后策略平衡性能与稳定性、自包含\schun 格式支持训练持久化、DiskChunGS对齐的两阶段Mapper（Phase 1初始建图+Phase 2增量映射）及其MappingOperation分发机制。第四章将通过实验验证系统的有效性。
+本章从系统论文角度重构了\ScaffoldChunGS 的设计与实现。系统以Mapper线程为调度中心，以SLAM位姿和MappingOperation驱动关键帧生命周期，以chunk作为CPU/GPU/磁盘之间的调度单位，以anchor tensor row作为可持久化训练状态，以child Gaussian作为运行时渲染图元。GPU显存稳定来自active chunk set和\texttt{max\_anchors\_in\_memory}约束，渲染效率来自chunk级与anchor级两级剔除，优化连续性来自\schun 文件对锚点参数、统计量和Adam状态的联合持久化。下一章将围绕压缩率、显存占用、I/O吞吐、渲染质量和SLAM运行效率验证这些系统设计是否达到预期效果。
