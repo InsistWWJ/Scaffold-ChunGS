@@ -201,7 +201,7 @@ C_{\mathrm{render}}=O(KN_{\mathrm{vis}})+O(C_{\mathrm{MLP}}N_{\mathrm{vis}}),
 
 \subsection{Active chunk定义}
 
-设全局chunk集合为$\mathcal{C}$，相机在时刻$t$的视锥为$\mathcal{V}_t$，chunk $c$的AABB为$\mathcal{B}_c$。当前帧的几何可见chunk集合定义为
+设全局chunk集合为$\mathcal{C}$，相机在时刻$t$的视锥为$\mathcal{V}_t$，chunk $c$的轴对齐包围盒（Axis-Aligned Bounding Box, AABB）为$\mathcal{B}_c$。当前帧的几何可见chunk集合定义为
 \begin{equation}
 \mathcal{C}_{\mathrm{vis}}(t)
 =
