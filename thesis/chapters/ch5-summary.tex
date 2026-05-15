@@ -5,55 +5,40 @@
 
 \section{工作总结}
 
-本文针对标准3D高斯泼溅在视觉SLAM应用中面临的两大瓶颈——单高斯存储开销大与场景规模受限于GPU显存——设计并实现了一套融合锚点压缩表示与分块外存管理的统一3D高斯SLAM系统\ScaffoldChunGS。主要完成的工作如下：
+本文围绕大规模3D高斯SLAM在资源受限平台上的地图增长与显存占用问题，设计并实现了一套融合锚点压缩表示与分块外存管理的工程系统\ScaffoldChunGS。系统以3D Gaussian Splatting的显式可微渲染表示为基础\cite{kerbl20233dgaussians}，吸收Scaffold-GS的锚点压缩思想\cite{lu2024scaffoldgs}和DiskChunGS的chunk外存管理思路\cite{feldmann2026diskchungs}，将核心组织方式概括为“chunk级调度、anchor级存储、sub-Gaussian级渲染”：全局地图按空间chunk组织并在磁盘与GPU之间换入换出，长期可训练状态以锚点及其特征形式保存，渲染时再由视角条件MLP动态展开为子高斯参与可微光栅化。通过这种三层粒度划分，系统将全局地图规模、GPU常驻工作集和单帧渲染负载分离管理，从而避免标准3DGS-SLAM中全地图长期常驻显存的实现限制。
 
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
-    \item \textbf{实现了完整的锚点压缩场景表示管线。}
-        包括体素化锚点初始化、视角条件三MLP解码器（不透明度/协方差/颜色）、层级化锚点生长（$\text{update\_depth}=3$层）与基于累积不透明度的锚点剪枝机制。
-        该方案将单高斯存储开销从约240 bytes压缩至约28 bytes，理论压缩比约8.6倍。
+在锚点压缩方面，本文构建了体素化锚点初始化、锚点特征存储、局部offset表示、视角条件MLP解码以及锚点生长和剪枝流程。与逐高斯长期保存位置、尺度、旋转、不透明度和球谐颜色参数不同，本文系统参考结构化高斯表示的设计方式\cite{lu2024scaffoldgs}，将主要外观和几何细节压缩到锚点特征和共享解码器中，并在渲染阶段生成子高斯属性。实验表明，该表示能够在保持可接受渲染质量的同时降低地图状态的存储开销，为后续chunk文件减小和I/O负担降低提供了基础。
 
-    \item \textbf{设计并实现了锚点粒度的分块外存管理系统。}
-        定义了64-bit Chunk ID空间编码方案与锚点级空间分块策略；实现了LRU淘汰算法（含5\%滞后缓冲区防止震荡）与异步并行块I/O；定义了自包含的\schun 二进制块格式，完整保存锚点参数与Adam优化器状态，支持训练暂停与恢复。
-        该方案使场景规模从GPU显存上限扩展至磁盘容量上限。
+在chunk内存管理方面，本文设计了锚点粒度的空间分块、64-bit Chunk ID编码、active chunk集合维护、LRU淘汰和异步块I/O流程，并定义了自包含的\schun 二进制文件格式。该部分与DiskChunGS中按空间块管理大规模高斯地图的思路一致\cite{feldmann2026diskchungs}，但块内长期状态由完整高斯集合调整为锚点及其优化状态。该格式不仅保存锚点参数，也保存训练统计量和Adam优化器状态\cite{kingma2014adam}，使地图块在从GPU换出后能够恢复训练连续性。合成场景和KITTI序列实验表明，active chunk set能够把GPU常驻锚点数量限制在预设上限附近，LRU策略和滞后缓冲区可以减少边界震荡，chunk加载与淘汰主要由相机覆盖的新空间范围触发，而不是由全局地图规模直接决定。
 
-    \item \textbf{构建了DiskChunGS对齐的完整SLAM系统框架。}
-        实现了两阶段Mapper管线（Phase 1初始建图定量累积+批量种子；Phase 2增量映射的\verb|combineMappingOperations|分发机制），集成了SLAMSystemInterface抽象层与BuiltinSLAMAdapter自包含前端（ORB+PnP视觉跟踪 + k-means BoVW回环闭合 + SE(3)位姿图优化），以及GLFW+OpenGL+ImGui实时可视化模块。在合成球面场景上验证了系统的端到端功能完整性。
+在SLAM系统集成方面，本文实现了以C++17、CUDA和LibTorch为基础的完整工程框架，集成了SLAMSystemInterface抽象层、内置ORB+PnP跟踪前端、MappingOperation队列、两阶段Mapper流程、关键帧管理、可微渲染训练、块级持久化和OpenGL/ImGui可视化模块。该实现没有重新设计完整的高精度前端SLAM算法，而是把工作重点放在3DGS地图后端的压缩表示、显存调度和训练状态管理上。与ORB-SLAM类系统主要关注几何定位和稀疏/半稠密地图维护不同\cite{mur2017orb}，本文更关注可渲染高斯地图在长序列中的资源管理。KITTI实验也说明\cite{Geiger2012CVPR}，当前轨迹精度主要受内置前端能力影响，而系统后端能够在固定显存条件下完成较长室外序列运行。
 
-    \item \textbf{设计了完整的实验分析框架。}
-        从压缩效果、内存管理行为、关键参数消融三个维度构建了评测方案，并设计了KITTI室外自动驾驶数据集的完整评测体系（ATE/RPE/渲染质量/磁盘占用），为后续在真实数据集上的系统对标提供了路线图。
-\end{enumerate}
+总体而言，本文完成的是一个面向工程验证的3DGS-SLAM系统实现。实验结果支持以下结论：锚点级存储可以降低单位地图状态开销，chunk级外存管理可以限制GPU常驻工作集，sub-Gaussian级渲染可以保留3DGS可微优化链路。三者结合后，系统能够在8 GB Jetson平台上进行较长KITTI序列的建图实验，并在存储占用、I/O数据量和显存峰值方面表现出实际工程收益。
+
+\section{系统局限性}
+
+本文系统仍然存在一些工程限制。首先，当前系统主要面向静态或准静态场景，对动态物体的处理能力有限。已有动态3DGS-SLAM和语义感知高斯SLAM研究表明，运动物体会影响高斯地图的长期稳定性，语义掩码和几何一致性约束是缓解动态干扰的常见处理方向\cite{zhanglanxin2025dynamicrgbd,zhangbin2025dynamic3dgs,wu2026semantic3dgsslam}。在KITTI等道路场景中，车辆和行人可能在锚点生长阶段产生较大梯度响应，如果缺少动态区域剔除或语义过滤，这些短期观测可能被写入长期地图，进而影响局部渲染质量和地图一致性。
+
+其次，chunk切换虽然能够控制GPU显存，但不能完全消除I/O和同步开销。当相机快速进入新区域或回环操作重新激活历史区域时，系统需要加载相关chunk并恢复优化器状态。虽然异步I/O可以降低等待时间，但在必要chunk尚未进入GPU前，训练线程仍然存在同步点。因此，chunk管理更适合具有空间局部性的相机轨迹；如果轨迹频繁跨越远距离区域，加载和淘汰事件会更加密集。
+
+再次，锚点展开本身会带来GPU计算负载。本文通过锚点存储降低长期状态开销，但每次渲染仍需对可见锚点执行MLP前向，并展开为子高斯参与光栅化和反向传播。当可见锚点数量较大、$n\_offsets$设置较高或图像分辨率较大时，MLP展开和渲染缓存仍可能成为训练阶段的主要开销。因此，锚点压缩并不意味着计算开销一定下降，它更主要解决的是存储和常驻显存问题。
+
+此外，本文的大规模真实评测主要集中在KITTI室外序列\cite{Geiger2012CVPR}，室内RGB-D场景、强回环场景和更大范围的城市级场景尚未充分覆盖。TUM RGB-D、Replica和ScanNet分别提供了室内轨迹精度、照片级室内场景和真实扫描环境的评测条件\cite{sturm2012tum,straub2019replica,dai2017scannet}。不同场景对chunk大小、active radius和锚点密度的要求不同，当前参数主要依据KITTI尺度进行选择，尚不能直接说明其在所有环境中都是合适配置。
+
+最后，系统对可见性局部性有一定依赖。chunk调度的基本假设是相邻帧共享较多可见区域，因而GPU中保留的active set能够被连续复用。对于跳跃式视角切换、多机器人异步建图或频繁跨区域回访的场景，仅依靠简单LRU策略可能不足，需要更强的预取、保护和调度机制。
 
 \section{未来工作展望}
 
-\ScaffoldChunGS 作为一个基础性系统框架，在以下几个方面有待进一步完善与扩展：
+后续工作可以首先面向动态Gaussian SLAM扩展当前地图表示。动态高斯SLAM相关工作已经开始从RGB-D动态建模、动态3D高斯渲染以及语义感知动态过滤角度处理非静态场景\cite{zhanglanxin2025dynamicrgbd,zhangbin2025dynamic3dgs,wu2026semantic3dgsslam}。在本文系统中，可以在锚点层面引入动态置信度、时间戳和观测稳定性统计，区分长期静态锚点与短期动态锚点；结合语义分割或运动一致性检测后，系统可以在写入chunk文件前过滤车辆、行人等临时对象，降低动态场景对长期地图的污染。
 
-\begin{enumerate}[label=(\arabic*),leftmargin=2em]
+其次，可以发展语义chunk管理机制。当前chunk主要按空间位置和最近访问时间调度，尚未利用场景语义和任务需求。面向大规模场景的3DGS-SLAM研究已经关注地图组织和优化复杂度控制\cite{cheng2025tlsslam}，语义驱动的高斯优化与语义感知动态SLAM也说明，语义信息可以为高斯分组、动态区域过滤和资源分配提供依据\cite{cheng2025rsgslam,wu2026semantic3dgsslam}。未来可以为chunk维护语义标签、观测频率、回环重要性和地图质量评分，使系统在显存紧张时优先保留路口、回环关键区域或高置信静态结构，而不是只按照最近访问时间淘汰。
 
-    \item \textbf{完整光栅化器替换。}
-        当前系统的CUDA光栅化器为简化点泼溅实现，渲染质量与原始3DGS的tile-based排序混合存在差距\cite{kerbl20233dgaussians}。
-        将该模块替换为INRIA的\verb|diff_gaussian_rasterization|是实现与SOTA方法（如Compact\_GSSLAM\cite{chen2025compact}、Photo-SLAM\cite{huang2024photoslam}）公平定量对比的前提。
+第三，可以研究多GPU或分布式chunk调度。GigaSLAM、Large-Scale Gaussian Splatting SLAM和TLS-SLAM等工作已经从层次化组织、局部子图和大场景调度角度探索了大规模高斯地图问题\cite{deng2025gigaslam,xin2025largescale,cheng2025tlsslam}。对于更大范围的城市级建图，单GPU即使配合外存管理也会受到加载带宽和训练吞吐限制。未来可以将不同空间区域的chunk分配到多块GPU或多台边缘设备上，并通过统一的chunk索引、位姿图和地图合并机制实现分布式大场景建图。
 
-    \item \textbf{回环检测升级。}
-        当前系统已实现基于k-means BoVW + PnP验证的回环检测与SE(3)位姿图优化。未来工作可将其升级为学习型全局描述子（NetVLAD\cite{arandjelovic2016netvlad} 或 DINOv2），提升在挑战性场景（光照变化、季节变化）下的召回率。
-        Compact\_GSSLAM\cite{chen2025compact}和DiskChunGS\cite{feldmann2026diskchungs}已分别验证了各自的闭环方案，可参考其策略。
+第四，可以继续优化轻量化部署。当前系统已经在Jetson Orin Nano上完成实验，但MLP展开、渲染缓存和优化器状态仍占用较多算力与显存。面向边缘端的3DGS-SLAM加速和轻量化研究已经指出，实时系统瓶颈不仅来自算法复杂度，也来自显存访问和硬件执行路径\cite{wang2025react3d,huang2026splatonic,wangyuzhe2025lightweight}。后续可以采用半精度存储、量化锚点特征、轻量MLP结构、增量优化器状态更新和CUDA kernel融合等方式减少运行开销，使系统更适合移动机器人和边缘端长期运行。
 
-    \item \textbf{可视化升级为splat渲染。}
-        当前GLFW+OpenGL+ImGui实时可视化已支持点云、视锥和轨迹渲染。未来工作可接入CUDA光栅化器实现可视化窗口内的全质量高斯泼溅渲染，使训练过程与预览体验统一。
+第五，可以进一步改进锚点压缩策略。当前系统使用固定特征维度和固定$n\_offsets$，不同区域的表示能力分配不够灵活。Compact 3D Gaussian Splatting、RTGS以及若干三维高斯压缩研究均表明，冗余削减需要同时考虑质量、训练开销和存储成本\cite{deng2025compact,li2025rtgs,wangyutong2025maskcompression,hejinxu2025compact3dgs}。未来可以根据纹理复杂度、几何变化和观测频率自适应调整锚点特征维度、子高斯数量或剪枝阈值，使简单区域使用更紧凑的表示，复杂区域保留更多细节。
 
-    \item \textbf{优化器状态增量更新。}
-        当前锚点生长后需完整重建Adam优化器（`trainingSetup`），效率较低。
-        参考Compact\_GSSLAM的做法，实现优化器状态的增量扩展——仅为新锚点分配零初始化状态，保留旧锚点的既有状态——以减少训练中断。
+最后，未来还需要扩展真实数据集和工程测试范围。除KITTI外\cite{Geiger2012CVPR}，应在TUM RGB-D、Replica、ScanNet以及更长室外序列上评估轨迹精度、渲染质量、显存稳定性和chunk调度行为\cite{sturm2012tum,straub2019replica,dai2017scannet}。通过不同尺度和不同运动模式的数据集测试，可以更清楚地确定系统参数的适用范围，并为后续工程部署提供依据。
 
-    \item \textbf{深度先验集成。}
-        将DepthLab\cite{kopf2024depthlab}等扩散式深度补全模型作为深度先验集成至系统中，改善在稀疏或含噪深度输入条件下的重建质量。
-
-    \item \textbf{真实数据集全面评测。}
-        在室内RGB-D数据集（TUM RGB-D\cite{sturm2012tum}、Replica\cite{straub2019replica}、ScanNet\cite{dai2017scannet}）上评测跟踪精度与重建质量；在室外KITTI数据集\cite{Geiger2012CVPR}上与DiskChunGS\cite{feldmann2026diskchungs}进行对标评测（ATE/RPE/渲染质量/磁盘占用），验证锚点压缩在分块外存管理基础上的增量收益。同时与Compact\_GSSLAM、Photo-SLAM等baseline进行系统对比。
-
-    \item \textbf{嵌入式平台适配。}
-        针对Jetson AGX Orin等嵌入式平台进行CUDA kernel优化与内存精简，实现边缘端的大场景稠密SLAM。
-
-\end{enumerate}
-
-\vspace{1cm}
-\noindent 通过上述改进，\ScaffoldChunGS 有潜力成为一个兼具压缩效率、场景可扩展性与高渲染质量的实用化3D高斯SLAM系统，为AR/VR、机器人导航与数字孪生等应用提供底层技术支持。
+综上，\ScaffoldChunGS 验证了锚点压缩与chunk外存管理结合用于大规模3DGS-SLAM的可行性。后续工作不应只追求单项指标提升，而应围绕动态环境、语义调度、轻量化部署和分布式建图继续完善系统，使其逐步具备更稳定的长期运行能力。
