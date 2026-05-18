@@ -13,6 +13,8 @@
 
 \ScaffoldChunGS 的运行时不是一条静态模块链，而是一组围绕地图状态闭环更新的数据流。输入图像首先进入\texttt{SLAMSystemInterface}，前端返回当前帧位姿$\mathbf{T}_{cw}$，并在产生关键帧、局部BA或回环时向MappingOperation队列写入操作。Mapper线程从帧队列和操作队列中取出数据，将关键帧写入\texttt{GaussianScene}，再驱动\texttt{GaussianModel}完成锚点增量、chunk加载、渲染训练和外存淘汰。每次训练迭代只访问由当前关键帧视锥和训练窗口确定的active chunk set，而不是遍历完整地图。
 
+图\ref{fig:ch3_runtime_flow}中的关键约束是：渲染器从不直接面向全局地图工作。它接收的是经过chunk调度和anchor级视锥剔除后的可见锚点切片；子高斯只在一次渲染调用中临时存在；优化器状态与锚点张量绑定，在chunk换出时一同序列化。这种数据边界使系统在长序列运行时保持显存稳定。
+
 \begin{figure}[htbp]
 \centering
 \fbox{%
@@ -41,11 +43,11 @@ loss backward $\rightarrow$ Adam state update $\rightarrow$ anchor grow/prune $\
 \label{fig:ch3_runtime_flow}
 \end{figure}
 
-图\ref{fig:ch3_runtime_flow}中的关键约束是：渲染器从不直接面向全局地图工作。它接收的是经过chunk调度和anchor级视锥剔除后的可见锚点切片；子高斯只在一次渲染调用中临时存在；优化器状态与锚点张量绑定，在chunk换出时一同序列化。这种数据边界使系统在长序列运行时保持显存稳定。
-
 \subsection{线程、数据结构与代码边界}
 
 系统中存在三类并发关系。第一，Mapper启动后创建后台线程，执行两阶段建图循环；外部输入通过\texttt{processFrame}写入帧队列，并由\texttt{mutex\_frame\_}保护。第二，Viewer创建独立显示线程，Mapper通过双缓冲\texttt{ViewerFrameData}提交显示快照，Viewer只读取副本，不直接访问训练中的模型。第三，chunk读写并不是单独常驻I/O线程，而是在\texttt{loadChunks}和\texttt{saveChunks}中使用\texttt{std::async}和\texttt{future}按批并行执行，从而缩短训练线程等待磁盘的时间。
+
+表\ref{tab:runtime_threads}说明，本章后续每个系统过程都可以落到真实代码结构：数据进入Mapper线程，形成关键帧和操作；地图状态在GaussianModel内以锚点张量和chunk元数据存在；训练过程生成子高斯并执行反传；Viewer线程只消费快照。这样的线程边界避免了渲染显示、SLAM输入和地图训练之间的直接写冲突。
 
 \begin{table}[htbp]
 \centering
@@ -63,8 +65,6 @@ Viewer线程 & ViewerFrameData双缓冲、frame mutex、close condition variable
 \bottomrule
 \end{tabular}
 \end{table}
-
-表\ref{tab:runtime_threads}说明，本章后续每个系统过程都可以落到真实代码结构：数据进入Mapper线程，形成关键帧和操作；地图状态在GaussianModel内以锚点张量和chunk元数据存在；训练过程生成子高斯并执行反传；Viewer线程只消费快照。这样的线程边界避免了渲染显示、SLAM输入和地图训练之间的直接写冲突。
 
 \subsection{图示设计建议}
 
@@ -290,6 +290,7 @@ $\rightarrow$
 \lambda_i\mathcal{L}_{\mathrm{iso}}.
 \end{equation}
 式中，$\mathcal{L}$为单次训练迭代的总损失；$\mathcal{L}_{1}$为RGB颜色的L1重建损失；$\mathcal{L}_{\mathrm{SSIM}}$为结构相似性损失；$\mathcal{L}_{\mathrm{depth}}$为深度监督损失；$\mathcal{L}_{\mathrm{iso}}$为子高斯尺度各向同性正则；$\lambda_s$、$\lambda_d$和$\lambda_i$分别表示SSIM、深度和尺度正则的权重。
+
 这些损失在\texttt{src/training/losses.cpp}中计算，训练循环调用\texttt{loss.backward()}生成梯度。随后\texttt{GaussianModel::optimizerStep}根据可见mask更新参数组。参数组包括锚点位置、offset、特征、不透明度、尺度、旋转、MLP参数和外观嵌入，对应\texttt{kNumAnchorParamGroups}中的八组状态。由于Adam状态按参数组保存到chunk文件，chunk换出后再换入不会丢失局部动量信息。
 
 锚点生长会改变优化器状态维度。代码中的实现策略是保存已有锚点行的Adam状态，为新增行补零，再重建参数组。这种方式比直接重启优化器更稳定，因为已有锚点的动量和步数得以保留；新增锚点则从零动量开始参与优化，避免污染旧锚点的收敛轨迹。
@@ -309,6 +310,7 @@ M_{\mathrm{render}}(K|\mathcal{A}_{\mathrm{vis}}|)
 M_{\mathrm{frame}}.
 \end{equation}
 式中，$M_{\mathrm{iter}}$表示单次训练迭代的主要GPU显存占用；$B_A$表示单个锚点及其训练态状态的平均字节数；$\mathcal{A}_{\mathrm{res}}$表示GPU resident锚点集合；$M_{\mathrm{MLP}}$表示共享MLP参数及其优化状态占用；$M_{\mathrm{render}}(\cdot)$表示渲染中间缓存随输入子高斯数量变化的显存开销；$K$为每个锚点展开的子高斯数量；$\mathcal{A}_{\mathrm{vis}}$表示当前帧可见锚点集合；$M_{\mathrm{frame}}$表示输入图像、深度图和监督缓存占用。
+
 系统通过\texttt{max\_anchors\_in\_memory\_}约束$|\mathcal{A}_{\mathrm{res}}|$，通过两级视锥剔除约束$|\mathcal{A}_{\mathrm{vis}}|$，通过chunk外存让全局地图规模$|\mathcal{A}|$转移到磁盘。因此，即使全局地图继续增长，GPU训练态显存仍围绕active working set波动，而不是随轨迹长度线性增长。
 
 \subsection{图示设计建议}
@@ -384,7 +386,7 @@ Mapper Thread $\rightarrow$ \texttt{submitToViewer} $\rightarrow$ Viewer double 
 
 \subsection{配置如何控制资源约束}
 
-系统资源边界由\texttt{scaffold\_chunks.yaml}控制，并在\texttt{trainer.cpp}中映射到锚点、chunk、优化、相机和关键帧五组配置。关键配置不是简单超参数，而是直接改变数据流粒度：offset数量决定每个锚点生成的子高斯数，特征维度决定MLP输入和压缩容量，chunk边长决定I/O空间粒度，GPU锚点上限决定resident set规模，损失权重决定反向传播对颜色、深度和形状的约束比例。
+系统资源边界由\texttt{scaffold\_chunks.yaml}控制，核心配置项如表\ref{tab:config_behavior}所示，并在\texttt{trainer.cpp}中映射到锚点、chunk、优化、相机和关键帧五组配置。关键配置不是简单超参数，而是直接改变数据流粒度：offset数量决定每个锚点生成的子高斯数，特征维度决定MLP输入和压缩容量，chunk边长决定I/O空间粒度，GPU锚点上限决定resident set规模，损失权重决定反向传播对颜色、深度和形状的约束比例。
 
 \begin{table}[htbp]
 \centering
@@ -408,7 +410,7 @@ Mapper Thread $\rightarrow$ \texttt{submitToViewer} $\rightarrow$ Viewer double 
 
 \subsection{源文件与系统职责}
 
-表\ref{tab:fileorg}给出本章叙事与真实源文件的对应关系。该表的作用是帮助定位实现，而不是替代系统数据流说明。
+表\ref{tab:fileorg}给出本章叙事与真实源文件的对应关系。
 
 \begin{table}[htbp]
 \centering

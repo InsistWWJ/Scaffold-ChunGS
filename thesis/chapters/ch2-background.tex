@@ -181,8 +181,7 @@ R\approx
 \begin{equation}
 C_{\mathrm{render}}=O(KN_{\mathrm{vis}})+O(C_{\mathrm{MLP}}N_{\mathrm{vis}}),
 \end{equation}
-式中，$C_{\mathrm{render}}$表示单帧锚点展开和渲染的计算复杂度；$K$为每个可见锚点展开的子高斯数量；$N_{\mathrm{vis}}$为可见锚点数；$C_{\mathrm{MLP}}$为单个锚点完成MLP前向解码的计算开销。
-其中$N_{\mathrm{vis}}$为可见锚点数，$C_{\mathrm{MLP}}$为单锚点MLP前向计算开销。因此，$K$同时控制表达能力、压缩比和渲染负载。本文默认$K=5$并在第四章做消融，原因是系统需要在显存、质量和实时性之间取得折中。
+式中，$C_{\mathrm{render}}$表示单帧锚点展开和渲染的计算复杂度；$K$为每个可见锚点展开的子高斯数量；$N_{\mathrm{vis}}$为可见锚点数；$C_{\mathrm{MLP}}$为单个锚点完成MLP前向解码的计算开销。因此，$K$同时控制表达能力、压缩比和渲染负载。本文默认$K=5$并在第四章做消融，原因是系统需要在显存、质量和实时性之间取得折中。
 
 \subsection{工程落点、系统约束与图示建议}
 
@@ -213,8 +212,7 @@ C_{\mathrm{render}}=O(KN_{\mathrm{vis}})+O(C_{\mathrm{MLP}}N_{\mathrm{vis}}),
 \cup
 \mathcal{C}_{\mathrm{loop}}(t),
 \end{equation}
-式中，$\mathcal{C}_{\mathrm{act}}(t)$为时刻$t$必须保持可访问的active chunk集合；$\mathcal{C}_{\mathrm{win}}(t)$为局部训练窗口中关键帧需要访问的chunk集合；$\mathcal{C}_{\mathrm{loop}}(t)$为回环优化期间需要保护的chunk集合；$\cup$表示集合并。
-其中$\mathcal{C}_{\mathrm{win}}$表示局部关键帧窗口需要的chunk，$\mathcal{C}_{\mathrm{loop}}$表示回环优化中需要保护的chunk。第三章中的active chunk不是单纯``当前可见块''，而是当前训练闭环不可缺失的GPU工作集。
+式中，$\mathcal{C}_{\mathrm{act}}(t)$为时刻$t$必须保持可访问的active chunk集合；$\mathcal{C}_{\mathrm{win}}(t)$为局部训练窗口中关键帧需要访问的chunk集合；$\mathcal{C}_{\mathrm{loop}}(t)$为回环优化期间需要保护的chunk集合；$\cup$表示集合并。第三章中的active chunk不是单纯``当前可见块''，而是当前训练闭环不可缺失的GPU工作集。
 
 \subsection{GPU常驻上界}
 
@@ -262,14 +260,13 @@ t_{\mathrm{last}}(c).
 \mathcal{S}_c=
 \{\theta_c,m_c,v_c,t_c,a_c\},
 \end{equation}
-式中，$\mathcal{S}_c$表示chunk $c$需要持久化的完整训练状态；$\theta_c$为chunk内锚点参数；$m_c$和$v_c$分别为Adam一阶矩和二阶矩；$t_c$为优化步数；$a_c$为访问时间、访问次数等调度统计。
-其中$\theta_c$为锚点参数，$m_c$和$v_c$为Adam一阶、二阶矩，$t_c$为优化步数，$a_c$为访问统计。若只保存$\theta_c$，重新加载后相当于重启局部优化器，可能造成跨chunk外观不连续。因此第三章的\schun 文件保存的是可恢复训练状态，而不是只用于显示的几何块。
+式中，$\mathcal{S}_c$表示chunk $c$需要持久化的完整训练状态；$\theta_c$为chunk内锚点参数；$m_c$和$v_c$分别为Adam一阶矩和二阶矩；$t_c$为优化步数；$a_c$为访问时间、访问次数等调度统计。若只保存$\theta_c$，重新加载后相当于重启局部优化器，可能造成跨chunk外观不连续。因此第三章的\schun 文件保存的是可恢复训练状态，而不是只用于显示的几何块。
 
 \subsection{两级视锥剔除的必要性}
 
 Chunk外存管理解决GPU常驻规模问题，但不能直接解决渲染负载问题。一个active chunk可能包含大量当前视角不可见的锚点。若对整个active set展开MLP，单帧复杂度为$O(KN_{\mathrm{act}})$；若进一步在anchor级筛选可见集合$\mathcal{A}_{\mathrm{vis}}$，复杂度降为
 \begin{equation}
-C_{\mathrm{frame}}
+O_{\mathrm{frame}}
 =
 O(|\mathcal{C}_{\mathrm{query}}|)
 +
@@ -277,7 +274,7 @@ O(N_{\mathrm{act}})
 +
 O(KN_{\mathrm{vis}}),
 \end{equation}
-式中，$C_{\mathrm{frame}}$表示单帧从chunk查询到渲染展开的主要计算复杂度；$|\mathcal{C}_{\mathrm{query}}|$为参与粗筛的chunk数量；$N_{\mathrm{act}}$为active chunk中的常驻锚点数；$K$为每个锚点展开的子高斯数；$N_{\mathrm{vis}}$为anchor级视锥剔除后的可见锚点数。
+式中，$O_{\mathrm{frame}}$表示单帧从chunk查询到渲染展开的主要计算复杂度；$|\mathcal{C}_{\mathrm{query}}|$为参与粗筛的chunk数量；$N_{\mathrm{act}}$为active chunk中的常驻锚点数；$K$为每个锚点展开的子高斯数；$N_{\mathrm{vis}}$为anchor级视锥剔除后的可见锚点数。
 其中$N_{\mathrm{vis}}=|\mathcal{A}_{\mathrm{vis}}|$且$N_{\mathrm{vis}}\leq N_{\mathrm{act}}$。第一级chunk-AABB测试减少磁盘加载范围，第二级anchor-frustum测试减少MLP展开和光栅化范围。两级剔除分别服务外存I/O和GPU计算，是第三章\texttt{FrustumCuller}与Chunk Memory Manager耦合的原因。
 
 \subsection{工程落点、系统约束与图示建议}
@@ -377,8 +374,7 @@ M_{\mathrm{chunk}}^{\mathrm{std}}
 \approx
 3B_G n_c,
 \end{equation}
-式中，$M_{\mathrm{chunk}}^{\mathrm{std}}$表示标准逐高斯表示下单个chunk的训练态存储近似；$B_G$为单个高斯参数字节数；$n_c$为chunk $c$中的高斯或等价图元数量；系数3近似表示参数本体、一阶矩和二阶矩三份状态。
-其中系数3近似来自参数、一阶矩和二阶矩。块越大，I/O延迟越高；块越小，调度频率越高。因此，只分块会缓解显存上限，但不能充分降低块内冗余和I/O压力。
+式中，$M_{\mathrm{chunk}}^{\mathrm{std}}$表示标准逐高斯表示下单个chunk的训练态存储近似；$B_G$为单个高斯参数字节数；$n_c$为chunk $c$中的高斯或等价图元数量；系数3近似表示参数本体、一阶矩和二阶矩三份状态。块越大，I/O延迟越高；块越小，调度频率越高。因此，只分块会缓解显存上限，但不能充分降低块内冗余和I/O压力。
 
 耦合设计同时改变两个量：锚点压缩降低单元字节数$B_A$，chunk管理限制常驻数量$N_{\mathrm{act}}$。其GPU训练态主项可写为
 \begin{equation}
